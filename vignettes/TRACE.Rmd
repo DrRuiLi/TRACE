@@ -1,0 +1,26 @@
+---
+title: "TRACE"
+output: html_notebook
+vignette: >
+  %\VignetteIndexEntry{TRACE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+### 1. DATA process
+1.1 library pacakge
+
+```{r setup}
+library(MSdev)
+```
+
