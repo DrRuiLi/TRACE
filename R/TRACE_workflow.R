@@ -766,6 +766,12 @@ TRACE_get_CN_labelling_ratio <- function(object) {
       fid.cxn0 <- this.hit[C_count == this.c & N_count == 0, to][1]
       fid.cxny <- this.hit[C_count == this.c & N_count == this.n, to][1]
 
+      # For CXN0 formulas (N == 0), C0NY == C0N0 and CXNY == CXN0.
+      if (is.finite(this.n) && this.n == 0) {
+        fid.c0ny <- fid.c0n0
+        fid.cxny <- fid.cxn0
+      }
+
       intensity <- c(
         S12C14N = .mean_feature_in_group(fid.c0n0, "S12C14N"),
         S12C15N = .mean_feature_in_group(fid.c0ny, "S12C15N"),
@@ -773,9 +779,10 @@ TRACE_get_CN_labelling_ratio <- function(object) {
         S13C15N = .mean_feature_in_group(fid.cxny, "S13C15N")
       )
 
-      intensity.sum <- sum(intensity, na.rm = TRUE)
-      ratio <- if (is.finite(intensity.sum) && intensity.sum > 0) {
-        intensity / intensity.sum
+      baseline <- intensity[["S12C14N"]]
+      baseline <- mean(intensity)
+      ratio <- if (is.finite(baseline) && baseline > 0) {
+        intensity / baseline
       } else {
         rep(NA_real_, length(intensity))
       }
