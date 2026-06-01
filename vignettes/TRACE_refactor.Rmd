@@ -52,7 +52,11 @@ analysis should be stored in the MSdev object@advancedAna$TRACE_temp
     - S12C15N: the labelling ratio of the CN_hit in the S12C15N group
     - S13C14N: the labelling ratio of the CN_hit in the S13C14N group
     - S13C15N: the labelling ratio of the CN_hit in the S13C15N group
-
+2. TRACE_CN_labelling_ratio_adjust should extract ratio of corresponding feature in the 4 groups of samples: 
+  - S12C14N should extract C0N0 feature, 
+  - S12C15N should extract C0NY feature, 
+  - S13C14N should extract CXN0 feature, 
+  - S13C15N should extract CXNY feature
 ```{r}
 # Run TRACE steps first, then collect CN seed labelling ratio:
 # object <- TRACE_workflow(object)

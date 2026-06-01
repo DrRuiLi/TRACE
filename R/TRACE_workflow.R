@@ -720,6 +720,7 @@ TRACE_get_CN_labelling_ratio <- function(object) {
       next
     }
 
+    cn.hit <- data.table::as.data.table(cn.hit)
     cn.seed <- cn.hit[, .SD[1], by = from]
     xcms.val <- xcms::featureValues(xcms.xcms, missing = 0, value = "maxo")
     xcms.pda <- Biobase::pData(xcms.xcms)
@@ -730,31 +731,66 @@ TRACE_get_CN_labelling_ratio <- function(object) {
       next
     }
 
-    seed.mat <- xcms.val[as.numeric(cn.seed$from), xcms.trace.sample$sampleNames, drop = FALSE]
-    group.mean <- sapply(sample.types, function(x.st) {
-      this.sample <- xcms.trace.sample$sampleNames[xcms.trace.sample$sample.type == x.st]
-      if (!length(this.sample)) {
-        return(rep(NA_real_, nrow(seed.mat)))
+    .mean_feature_in_group <- function(fid, sample.type) {
+      if (is.na(fid)) {
+        return(NA_real_)
       }
-      rowMeans(seed.mat[, this.sample, drop = FALSE], na.rm = TRUE)
+      fid <- suppressWarnings(as.numeric(fid))
+      if (!is.finite(fid) || fid < 1 || fid > nrow(xcms.val)) {
+        return(NA_real_)
+      }
+      this.sample <- xcms.trace.sample$sampleNames[xcms.trace.sample$sample.type == sample.type]
+      if (!length(this.sample)) {
+        return(NA_real_)
+      }
+      x <- xcms.val[fid, this.sample, drop = TRUE]
+      x.mean <- mean(x, na.rm = TRUE)
+      if (!is.finite(x.mean)) {
+        return(NA_real_)
+      }
+      x.mean
+    }
+
+    out.list[[pol]] <- lapply(seq_len(nrow(cn.seed)), function(i.seed) {
+      this.seed <- cn.seed[i.seed, ]
+      this.hit <- cn.hit[from == this.seed$from]
+      this.formula <- as.character(this.seed$TRACE_formula)
+
+      # TRACE_formula is "CXNY"; we need Y for C0NY and X for CXN0.
+      this.cn <- regmatches(this.formula, regexec("^C([0-9]+)N([0-9]+)$", this.formula))[[1]]
+      this.c <- if (length(this.cn) == 3) as.numeric(this.cn[2]) else NA_real_
+      this.n <- if (length(this.cn) == 3) as.numeric(this.cn[3]) else NA_real_
+
+      fid.c0n0 <- this.seed$from
+      fid.c0ny <- this.hit[C_count == 0 & N_count == this.n, to][1]
+      fid.cxn0 <- this.hit[C_count == this.c & N_count == 0, to][1]
+      fid.cxny <- this.hit[C_count == this.c & N_count == this.n, to][1]
+
+      intensity <- c(
+        S12C14N = .mean_feature_in_group(fid.c0n0, "S12C14N"),
+        S12C15N = .mean_feature_in_group(fid.c0ny, "S12C15N"),
+        S13C14N = .mean_feature_in_group(fid.cxn0, "S13C14N"),
+        S13C15N = .mean_feature_in_group(fid.cxny, "S13C15N")
+      )
+
+      intensity.sum <- sum(intensity, na.rm = TRUE)
+      ratio <- if (is.finite(intensity.sum) && intensity.sum > 0) {
+        intensity / intensity.sum
+      } else {
+        rep(NA_real_, length(intensity))
+      }
+
+      data.frame(
+        TRACE_seed = this.seed$from,
+        TRACE_formula = this.seed$TRACE_formula,
+        TRACE_cor = this.seed$TRACE_cor,
+        S12C14N = ratio[["S12C14N"]],
+        S12C15N = ratio[["S12C15N"]],
+        S13C14N = ratio[["S13C14N"]],
+        S13C15N = ratio[["S13C15N"]],
+        row.names = NULL
+      )
     })
-    group.mean <- as.matrix(group.mean)
-    colnames(group.mean) <- sample.types
-
-    group.sum <- rowSums(group.mean, na.rm = TRUE)
-    ratio <- sweep(group.mean, 1, group.sum, "/")
-    ratio[group.sum == 0 | is.na(group.sum), ] <- NA_real_
-
-    out.list[[pol]] <- data.frame(
-      TRACE_seed = cn.seed$from,
-      TRACE_formula = cn.seed$TRACE_formula,
-      TRACE_cor = cn.seed$TRACE_cor,
-      S12C14N = ratio[, "S12C14N"],
-      S12C15N = ratio[, "S12C15N"],
-      S13C14N = ratio[, "S13C14N"],
-      S13C15N = ratio[, "S13C15N"],
-      row.names = NULL
-    )
   }
 
   if (!length(out.list)) {
@@ -769,6 +805,6 @@ TRACE_get_CN_labelling_ratio <- function(object) {
     ))
   }
 
-  data.table::rbindlist(out.list, fill = TRUE) %>%
+  data.table::rbindlist(unlist(out.list, recursive = FALSE), fill = TRUE) %>%
     as.data.frame()
 }

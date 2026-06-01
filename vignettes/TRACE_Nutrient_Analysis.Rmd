@@ -1,8 +1,8 @@
 ---
-title: "PAVE_Demo"
+title: "TRACE_Nutrient_Analysis"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{PAVE_Demo}
+  %\VignetteIndexEntry{TRACE_Nutrient_Analysis}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---

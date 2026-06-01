@@ -3,10 +3,10 @@ TRACE <- function(object){
 
   if(F){
     object <- readRDS("temp/20251119.rds")
-    #object <- MSdev_load("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")
+    #object <- MSdev_load("d:/data/2026.01.07.TRACE.Nutrition/MSdev_2026_01_07.Rdata")
 
     demo.file <- get_dir_expand_from_onedrive(
-      "Documents/YLF_Lab/Project/2025.10.10.PAVE/data/demo/pave.demo.rdata")
+      "Documents/YLF_Lab/Project/2025.10.10.TRACE/data/demo/TRACE.demo.rdata")
     demo.file <- "d:/data/2025.12.26.PAVE2/PAVE_With_Params/QE_Plus_ppm10_sn10.rdata"
     object <- MSdev_load(demo.file)
     object <- MSdev_set_param(
@@ -47,10 +47,10 @@ TRACE <- function(object){
       #xcms.xcms <- xcms_filter_feature_rt_rsd(xcms.xcms,rt.shift = 3.5)
       xcms.xcms <- xcms_get_feature_wmean(xcms.xcms)
 
-      xcms.net <- get_xcms_feature_connect(xcms.xcms,rt.tol = rt.tol)
-      xcms.fdf <- featureDefinitions(xcms.xcms)
-      xcms.val <- featureValues(xcms.xcms,missing = 0,value = "maxo")
-      xcms.pave.sample <- pData(xcms.xcms)%>%
+      xcms.net <- MSdev:::get_xcms_feature_connect(xcms.xcms,rt.tol = rt.tol)
+      xcms.fdf <- xcms::featureDefinitions(xcms.xcms)
+      xcms.val <- xcms::featureValues(xcms.xcms,missing = 0,value = "maxo")
+      xcms.TRACE.sample <- Biobase::pData(xcms.xcms)%>%
         dplyr::filter(sample.type %in% c("S12C14N","S12C15N","S13C14N","S13C15N","Blank"))
 
     }
@@ -59,25 +59,25 @@ TRACE <- function(object){
     {
 
       cn.mass.diff <- get_CN_mass_diff_table(N_max = 10)[,type :="CN_label"]
-      ad.mass.diff <- get_adduct_mass_diff(unique(polarity(xcms.xcms)))[,type := "adduct"]
+      ad.mass.diff <- get_adduct_mass_diff(polarity = i.pol)[,type := "adduct"]
       is.mass.diff <- get_iso_mass_diff()[,type := "isotope"]
       fg.mass.diff <- get_fragment_mass_diff()[,type := "fragment"]
 
       mass.diff.range <- range(cn.mass.diff$mass_diff,
                                ad.mass.diff$mass_diff,
                                is.mass.diff$mass_diff)
-      xcms.net <- xcms.net[between.range(mz.diff,  mass.diff.range)]
+      xcms.net <- xcms.net[between(mz.diff,  mass.diff.range[1],mass.diff.range[2])]
 
-      cn.match <- match_mz_foverlaps( xcms.net$mz.diff,cn.mass.diff$mass_diff,
+      cn.match <- MSdev:::match_mz_foverlaps( xcms.net$mz.diff,cn.mass.diff$mass_diff,
                                       ppm.base = xcms.net$mz.mean,ppm = ppm)
 
-      ad.match <- match_mz_foverlaps( xcms.net$mz.diff,ad.mass.diff$mass_diff,
+      ad.match <- MSdev:::match_mz_foverlaps( xcms.net$mz.diff,ad.mass.diff$mass_diff,
                                       ppm.base = xcms.net$mz.mean,ppm = ppm)
 
-      is.match <- match_mz_foverlaps( xcms.net$mz.diff,is.mass.diff$mass_diff,
+      is.match <- MSdev:::match_mz_foverlaps( xcms.net$mz.diff,is.mass.diff$mass_diff,
                                       ppm.base = xcms.net$mz.mean,ppm = ppm)
 
-      fg.match <- match_mz_foverlaps( xcms.net$mz.diff,fg.mass.diff$mass_diff,
+      fg.match <- MSdev:::match_mz_foverlaps( xcms.net$mz.diff,fg.mass.diff$mass_diff,
                                       ppm.base = xcms.net$mz.mean,ppm = ppm)
 
 
@@ -96,7 +96,7 @@ TRACE <- function(object){
     {
 
       cn.net <- cn.net%>%
-        dplyr::mutate(pave_pattern = paste0("C",C_count ,"N",N_count  ))
+        dplyr::mutate(TRACE_pattern = paste0("C",C_count ,"N",N_count  ))
       cn.net.list <- split(cn.net,cn.net$from)
       prefilt <- sapply(cn.net.list,function(x.cn){ 0 %in% x.cn$N_count   })
       cn.net.list <- cn.net.list[prefilt]
@@ -110,7 +110,7 @@ TRACE <- function(object){
         c.max <- x.cn$from.mz[1]/14
         #possible.c.count <- possible.c.count[possible.c.count < c.max&possible.c.count > 0]
 
-        possible.c.count <- PAVE_LowC_cutoff%>%
+        possible.c.count <- TRACE_LowC_cutoff%>%
           dplyr::filter(mass_min < x.cn$from.mz[1],
                         mass_max > x.cn$from.mz[1])%>%
           dplyr::pull(c.count)%>%intersect(possible.c.count,.)
@@ -128,12 +128,12 @@ TRACE <- function(object){
           all.form <- c(paste0("C0N",this.n,""),paste0("C",this.c,"N0"),
                         paste0("C",this.c,"N",this.n,""))
           all.form <- setdiff(all.form,"C0N0")
-          if (!all(all.form %in% x.cn$pave_pattern ) ) next
+          if (!all(all.form %in% x.cn$TRACE_pattern ) ) next
 
           #message(x)
-          to.id <- x.cn$to[match(all.form,x.cn$pave_pattern)]
-          m.detected <- xcms.val[c(x.cn$from[1],to.id),  xcms.pave.sample$sampleNames]
-          colnames(m.detected) <- xcms.pave.sample$sample.type
+          to.id <- x.cn$to[match(all.form,x.cn$TRACE_pattern)]
+          m.detected <- xcms.val[c(x.cn$from[1],to.id),  xcms.TRACE.sample$sampleNames]
+          colnames(m.detected) <- xcms.TRACE.sample$sample.type
           rownames(m.detected) <- c("C0N0",all.form)
           mean.c0n0 <- mean(m.detected[rownames(m.detected) == "C0N0",
                                        colnames(m.detected) == "S12C14N"])
@@ -160,16 +160,16 @@ TRACE <- function(object){
         all.form <- c(paste0("C0N",cn.comb$N,""),paste0("C",cn.comb$C,"N0"),
                       paste0("C",cn.comb$C,"N",cn.comb$N,""))
         all.form <- setdiff(all.form,"C0N0")
-        x.cn <- x.cn[match(all.form,x.cn$pave_pattern),]
-        x.cn$pave_cor <- p.cor.max
-        x.cn$pave_formula <-  paste0("C",cn.comb$C,"N",cn.comb$N,"")
+        x.cn <- x.cn[match(all.form,x.cn$TRACE_pattern),]
+        x.cn$TRACE_cor <- p.cor.max
+        x.cn$TRACE_formula <-  paste0("C",cn.comb$C,"N",cn.comb$N,"")
         return(x.cn)
 
       },BPPARAM = SerialParam(progressbar = T))
       names(cn.net.list.hit) <- names(cn.net.list)
       cn.net.list.hit <- cn.net.list.hit[!sapply(cn.net.list.hit,is.null)]
       cn.net.hit <- data.table::rbindlist(cn.net.list.hit)%>%
-        dplyr::filter(pave_cor > 0.75)
+        dplyr::filter(TRACE_cor > 0.75)
 
 
 
@@ -179,18 +179,18 @@ TRACE <- function(object){
         time.end <- Sys.time()
         time.cost <- difftime(time.end,time.start,units = "secs")%>%as.numeric()
         readr::write_lines(
-          paste0("pave2",",",
+          paste0("TRACE2",",",
                  nrow(featureDefinitions(xcms.xcms)),",",
                  time.cost),
           append = T,
-          file = get_dir_expand_from_onedrive("Documents/YLF_Lab/Project/2025.10.10.PAVE/data/pave.CN.count.timer.csv")
+          file = get_dir_expand_from_onedrive("Documents/YLF_Lab/Project/2025.10.10.TRACE/data/TRACE.CN.count.timer.csv")
         )
 
         if (T) {
 
           cn.temp <- data.table::rbindlist(cn.net.list.hit)
-          object@advancedAna$PAVE2_temp[[pol]]$CNfinder <- cn.net %>%
-            dplyr::mutate(pave_cor = cn.temp$pave_cor[match(ion1,cn.temp$ion1)])
+          object@advancedAna$TRACE2_temp[[pol]]$CNfinder <- cn.net %>%
+            dplyr::mutate(TRACE_cor = cn.temp$TRACE_cor[match(ion1,cn.temp$ion1)])
 
         }
 
@@ -216,8 +216,8 @@ TRACE <- function(object){
                                                     cn.net.eval[!(cn.hit),rt.diff])
       rt.tol.dyn <- rt.fit$sd * qnorm(0.99999)
 
-      object@advancedAna$PAVE2_temp[[pol]][["mz.dyn"]] <- ppm.fit
-      object@advancedAna$PAVE2_temp[[pol]][["rt.dyn"]] <- rt.fit
+      object@advancedAna$TRACE2_temp[[pol]][["mz.dyn"]] <- ppm.fit
+      object@advancedAna$TRACE2_temp[[pol]][["rt.dyn"]] <- rt.fit
 
       cols <- c("TRUE" = "red","FALSE" = "#888888")
 
@@ -298,8 +298,8 @@ TRACE <- function(object){
           plot.tag.position = "topleft",
           plot.margin = margin(t = 1, r = 1 , b = 1, l = 1 ))
       #open_plot_win(p.all,width = 10,height = 10)
-      fo <- paste0(object@projectInfo$MSdevFile,".pave.error.pdf")
-      fo <- paste0( "C:\\Users\\91879\\OneDrive\\Documents\\YLF_Lab\\Project\\2025.10.10.PAVE\\result/dynamic error/",
+      fo <- paste0(object@projectInfo$MSdevFile,".TRACE.error.pdf")
+      fo <- paste0( "C:\\Users\\91879\\OneDrive\\Documents\\YLF_Lab\\Project\\2025.10.10.TRACE\\result/dynamic error/",
                     basename(fo) )
       export_graph2pdf(p.all,file_path = fo,width = 3,height = 3,append = i.pol)
 
@@ -327,7 +327,7 @@ TRACE <- function(object){
 
       cn.seed <- cn.net.hit$from
       cn.seed.formula <- cn.net.hit[,.SD[1],by = from]
-      cn.seed.formula <- setNames(cn.seed.formula$pave_formula,cn.seed.formula$from)
+      cn.seed.formula <- setNames(cn.seed.formula$TRACE_formula,cn.seed.formula$from)
       ad.net.cs <- ad.net[from %in% cn.seed&to %in% cn.seed]
       is.net.cs <- is.net[from %in% cn.seed&to %in% cn.seed]
       fg.net.cs <- fg.net[from %in% cn.seed&to %in% cn.seed]
@@ -392,10 +392,10 @@ TRACE <- function(object){
           color = case_when(
             name %in% cn.net.hit$from ~ "#E64B35",
             T~"#97C2FC"  ),
-          pave_formula = cn.seed.formula[name],
+          TRACE_formula = cn.seed.formula[name],
           mz = xcms.fdf$mzmed[as.numeric(name)],
           rt = xcms.fdf$rtmed[as.numeric(name)],
-          label = paste0(pave_formula,"\n",name))
+          label = paste0(TRACE_formula,"\n",name))
       cn.seed.ig <- igraph::graph_from_data_frame(cn.seed.net,vertices = cn.seed.node)
 
 
@@ -405,7 +405,7 @@ TRACE <- function(object){
     {
 
       cn.seed.vdata <- vdata(cn.seed.ig)
-      cpdb <- openxlsx::read.xlsx("d:/data/2025.12.26.PAVE2/trace.cp.db.xlsx")
+      cpdb <- openxlsx::read.xlsx("d:/data/2025.12.26.TRACE2/trace.cp.db.xlsx")
       adducts <- MSCC::adduct.table%>%
         dplyr::filter((sign(Charge)+1)/2 == unique(polarity(xcms.xcms)),
                       Multi  == 1,
@@ -442,7 +442,7 @@ TRACE <- function(object){
       for (x in 1:nrow(cn.seed.vdata))  {
 
         x.name <- cn.seed.vdata$name[x]
-        x.cn <- cn.seed.vdata$pave_formula[x]
+        x.cn <- cn.seed.vdata$TRACE_formula[x]
         x.candi.id <- cn.seed.vdata$candidate.id[[x]]
         x.candi.formula <- cn.seed.vdata$candidate.formula[[x]]
         x.candi.cn <-  extract_formula_CN(x.candi.formula)
@@ -468,7 +468,7 @@ TRACE <- function(object){
       node.annos <- lapply(1:nrow(cn.seed.vdata), function(x){
 
         x.name <- cn.seed.vdata$name[x]
-        x.cn <- cn.seed.vdata$pave_formula[x]
+        x.cn <- cn.seed.vdata$TRACE_formula[x]
         x.candi.id <- cn.seed.vdata$candidate.id[[x]]
         x.candi.formula <- cn.seed.vdata$candidate.formula[[x]]
         x.candi.adduct <- cn.seed.vdata$candidate.adduct[[x]]
@@ -625,7 +625,7 @@ TRACE <- function(object){
                               cn.seed.vdata.unknown,
                               cn.seed.vdata.fi)%>%
         dplyr::select(feature_id = name,
-                      pave_formula,
+                      TRACE_formula,
                       mz,rt,type,seed,
                       compound_id = compound.id,compound.formula,
                       compound.adduct,compound.rt)
