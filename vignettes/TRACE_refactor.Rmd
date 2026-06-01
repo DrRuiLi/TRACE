@@ -1,0 +1,61 @@
+---
+title: "TRACE"
+output: html_notebook
+vignette: >
+  %\VignetteIndexEntry{TRACE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+# TRACE refactor
+1. read the code of TRACE.R, refactor to three parts, each part is a function:
+  - TRACE_get_CN_net
+  - TRACE_dynamic_filter
+  - TRACE_network_assignment
+2. write a new function TRACE_workflow to call the three functions above to complete the TRACE analysis.
+3. keep the original code for reference, all the return should be a MSdev object. data required for the following
+analysis should be stored in the MSdev object@advancedAna$TRACE_temp
+4. some of function in TRACE() is called from pacakge MSdev, search for the function in MSdev, if it is exported, add MSdev:: to the function name. if not, notice me to export it from MSdev.
+
+```{r}
+# New refactored workflow entry point
+# object <- TRACE_workflow(object)
+
+# Optional step-by-step execution for one polarity
+# object <- TRACE_get_CN_net(object, i.pol = 0)
+# object <- TRACE_dynamic_filter(object, i.pol = 0)
+# object <- TRACE_network_assignment(object, i.pol = 0)
+# object <- TRACE_annotate(object, i.pol = 0)
+```
+
+
+## TRACE_CN_labelling_ratio_adjust
+1. add a function TRACE_get_CN_labelling_ratio to get the CN labelling ratio from the MSdev object:
+  - input: MSdev object
+  - this function check all the CN_hit from 'TRACE_get_CN_net'
+  - for each CN_hit, it will check the labelling ratio of the CN_hit in the 4 groups of samples: S12C14N, S12C15N, S13C14N, S13C15N
+  - extract the labelling ratio of CN_hit will be stored in a data.frame with columns:
+    - TRACE_seed: the feature_id of the CN_hit
+    - TRACE_formula: the formula of the CN_hit
+    - TRACE_cor: the correlation score of the CN_hit
+    - S12C14N: the labelling ratio of the CN_hit in the S12C14N group
+    - S12C15N: the labelling ratio of the CN_hit in the S12C15N group
+    - S13C14N: the labelling ratio of the CN_hit in the S13C14N group
+    - S13C15N: the labelling ratio of the CN_hit in the S13C15N group
+
+```{r}
+# Run TRACE steps first, then collect CN seed labelling ratio:
+# object <- TRACE_workflow(object)
+# cn_ratio <- TRACE_get_CN_labelling_ratio(object)
+# head(cn_ratio)
+```

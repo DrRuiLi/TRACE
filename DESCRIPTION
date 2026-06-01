@@ -19,3 +19,8 @@ Suggests:
     rmarkdown
 VignetteBuilder: knitr
 Config/roxygen2/version: 8.0.0
+Imports: 
+    data.table,
+    MSdev
+Depends: 
+    R (>= 3.5)
