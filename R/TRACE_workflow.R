@@ -32,11 +32,21 @@
 #' @param i.pol Polarity index. `0` for negative and `1` for positive.
 #' @param rt.tol RT tolerance in seconds.
 #' @param ppm m/z tolerance in ppm.
+#' @param ratio.adjust Numeric vector of length 4 used to adjust the
+#'   theoretical CN labelling ratio across `S12C14N`, `S12C15N`,
+#'   `S13C14N`, `S13C15N`.
+#' @param TRACE_cor_cutoff Minimum `TRACE_cor` to retain a CN hit.
 #'
 #' @returns Updated MSdev object with intermediate data in
 #'   `object@advancedAna$TRACE_temp[[pol]]`.
 #' @export
-TRACE_get_CN_net <- function(object, i.pol, rt.tol = 10, ppm = 5) {
+TRACE_get_CN_net <- function(
+    object,
+    i.pol,
+    rt.tol = 10,
+    ppm = 5,
+    ratio.adjust = c(1, 1, 1, 1),
+    TRACE_cor_cutoff = 0.7) {
   object <- .trace_init_temp(object)
 
   pol <- .trace_get_pol(i.pol)
@@ -151,7 +161,7 @@ TRACE_get_CN_net <- function(object, i.pol, rt.tol = 10, ppm = 5) {
           m.detected[rownames(m.detected) == "C0N0", colnames(m.detected) == "S12C14N"]
         )
         m.detected <- m.detected / mean.c0n0
-        m.ideal <- get_ideal_CN_ratio(this.c, this.n) %>% t()
+        m.ideal <- get_ideal_CN_ratio(this.c, this.n, ratio.adjust = ratio.adjust) %>% t()
         m.ideal <- m.ideal[rownames(m.detected), colnames(m.detected)]
 
         cn.comb$p.cor[i.cn] <- cor(as.vector(m.detected), as.vector(m.ideal))
@@ -194,7 +204,7 @@ TRACE_get_CN_net <- function(object, i.pol, rt.tol = 10, ppm = 5) {
   }
 
   cn.net.hit <- data.table::rbindlist(cn.net.list.hit) %>%
-    dplyr::filter(TRACE_cor > 0.75)
+    dplyr::filter(TRACE_cor >= TRACE_cor_cutoff)
   cn.temp <- data.table::rbindlist(cn.net.list.hit)
   cn.finder <- cn.net %>%
     dplyr::mutate(TRACE_cor = cn.temp$TRACE_cor[match(ion1, cn.temp$ion1)])
@@ -703,11 +713,22 @@ TRACE_workflow <- function(
 #' Get CN labelling ratio for TRACE seeds
 #'
 #' @param object MSdev object.
+#' @param eval_top Proportion in `(0, 1]` used to select top `TRACE_cor`
+#'   entries for ratio-adjust evaluation.
+#' @param plot Logical. If `TRUE`, draw labelling-ratio jitter/crossbar plot
+#'   for the top `eval_top` `TRACE_cor` entries.
 #'
 #' @returns A data.frame with columns `TRACE_seed`, `TRACE_formula`,
 #'   `TRACE_cor`, `S12C14N`, `S12C15N`, `S13C14N`, `S13C15N`.
 #' @export
-TRACE_get_CN_labelling_ratio <- function(object) {
+TRACE_get_CN_labelling_ratio <- function(object, eval_top = 0.2, plot = FALSE) {
+  if (!is.numeric(eval_top) || length(eval_top) != 1 || is.na(eval_top) || eval_top <= 0 || eval_top > 1) {
+    stop("eval_top must be a numeric scalar in (0, 1].")
+  }
+  if (!is.logical(plot) || length(plot) != 1 || is.na(plot)) {
+    stop("plot must be a single TRUE/FALSE value.")
+  }
+
   sample.types <- c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
   out.list <- list()
 
@@ -812,6 +833,55 @@ TRACE_get_CN_labelling_ratio <- function(object) {
     ))
   }
 
-  data.table::rbindlist(unlist(out.list, recursive = FALSE), fill = TRUE) %>%
+  ratio.df <- data.table::rbindlist(unlist(out.list, recursive = FALSE), fill = TRUE) %>%
     as.data.frame()
+
+  eval.df <- ratio.df %>%
+    dplyr::filter(!is.na(TRACE_cor)) %>%
+    dplyr::arrange(dplyr::desc(TRACE_cor))
+
+  if (nrow(eval.df) > 0) {
+    n.keep <- max(1, ceiling(nrow(eval.df) * eval_top))
+    eval.df <- utils::head(eval.df, n.keep)
+    med <- apply(eval.df[, sample.types, drop = FALSE], 2, stats::median, na.rm = TRUE)
+    med[!is.finite(med)] <- NA_real_
+  } else {
+    med <- setNames(rep(NA_real_, length(sample.types)), sample.types)
+  }
+
+  xx <- formatC(eval_top * 100, format = "f", digits = 2)
+  msg.adjust <- paste(
+    formatC(med[["S12C14N"]], format = "f", digits = 4),
+    formatC(med[["S12C15N"]], format = "f", digits = 4),
+    formatC(med[["S13C14N"]], format = "f", digits = 4),
+    formatC(med[["S13C15N"]], format = "f", digits = 4),
+    sep = ","
+  )
+  message(
+    "Evaluate the adjusted labelling ratio with top ", xx,
+    "% TRACE_cor, run TRACE_get_CN_net(ratio.adjust = c(",
+    msg.adjust,
+    ")) to get the best CN label."
+  )
+
+  if (plot) {
+    plot.df <- eval.df %>%
+      tidyr::pivot_longer(dplyr::all_of(sample.types), names_to = "name", values_to = "value")
+    p <- ggplot2::ggplot(plot.df, ggplot2::aes(x = name, y = value, col = TRACE_cor)) +
+      ggplot2::geom_jitter(alpha = 0.5) +
+      ggplot2::stat_summary(
+        fun = "median",
+        fun.min = "median",
+        fun.max = "median",
+        geom = "crossbar",
+        width = 0.5,
+        color = "black",
+        size = 0.5
+      ) +
+      ggplot2::geom_hline(yintercept = 1) +
+      ggplot2::scale_color_gradient(low = "yellow", high = "red")
+    print(p)
+  }
+
+  ratio.df
 }
