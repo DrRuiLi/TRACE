@@ -883,5 +883,69 @@ TRACE_get_CN_labelling_ratio <- function(object, eval_top = 0.2, plot = FALSE) {
     print(p)
   }
 
+  attr(ratio.df, "cn.group.ratio") <- med
   ratio.df
+}
+
+#' Adjust CN labelling ratio and optionally reconstruct CN hits
+#'
+#' This function calculates the labelling ratio of each CN hit across the
+#' 4 TRACE sample groups, stores the evaluated group-level ratio in
+#' `object@advancedAna$TRACE_temp$cn.group.ratio`, and optionally
+#' reconstructs the CN hit network by re-running `TRACE_get_CN_net()` with
+#' the new `ratio.adjust`.
+#'
+#' @param object MSdev object.
+#' @param eval_top Proportion in `(0, 1]` used to select top `TRACE_cor`
+#'   entries for ratio-adjust evaluation.
+#' @param plot Logical. If `TRUE`, draw labelling-ratio jitter/crossbar plot
+#'   for the top `eval_top` `TRACE_cor` entries.
+#' @param reconstruct Logical. If `TRUE`, re-run `TRACE_get_CN_net()` using
+#'   the evaluated 4-group labelling ratio as `ratio.adjust`.
+#'
+#' @returns Updated MSdev object.
+#' @export
+TRACE_CN_labelling_ratio_adjust <- function(object, eval_top = 0.2, plot = FALSE, reconstruct = TRUE) {
+  if (!is.logical(reconstruct) || length(reconstruct) != 1 || is.na(reconstruct)) {
+    stop("reconstruct must be a single TRUE/FALSE value.")
+  }
+
+  ratio.df <- TRACE_get_CN_labelling_ratio(object, eval_top = eval_top, plot = plot)
+  cn.group.ratio <- attr(ratio.df, "cn.group.ratio", exact = TRUE)
+  sample.types <- c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
+
+  if (is.null(object@advancedAna$TRACE_temp)) {
+    object@advancedAna$TRACE_temp <- list()
+  }
+  if (is.null(object@advancedAna$TRACE_temp$cn.group.ratio)) {
+    object@advancedAna$TRACE_temp$cn.group.ratio <- list()
+  }
+  object@advancedAna$TRACE_temp$cn.group.ratio[["all"]] <- cn.group.ratio
+
+  if (reconstruct) {
+    ratio.adjust <- cn.group.ratio[sample.types]
+    ratio.adjust <- as.numeric(ratio.adjust)
+    ratio.adjust[!is.finite(ratio.adjust)] <- 1
+    if (length(ratio.adjust) != 4) {
+      ratio.adjust <- rep(1, 4)
+    }
+
+    for (i.pol in 0:1) {
+      pol <- .trace_get_pol(i.pol)
+      rt.tol <- .trace_get_temp(object, pol, "rt.tol")
+      ppm <- .trace_get_temp(object, pol, "ppm")
+      if (is.null(rt.tol)) rt.tol <- 10
+      if (is.null(ppm)) ppm <- 5
+
+      object <- TRACE_get_CN_net(
+        object,
+        i.pol = i.pol,
+        rt.tol = rt.tol,
+        ppm = ppm,
+        ratio.adjust = ratio.adjust
+      )
+    }
+  }
+
+  object
 }
