@@ -57,9 +57,14 @@ analysis should be stored in the MSdev object@advancedAna$TRACE_temp
   - S12C15N should extract C0NY feature, 
   - S13C14N should extract CXN0 feature, 
   - S13C15N should extract CXNY feature
-```{r}
-# Run TRACE steps first, then collect CN seed labelling ratio:
-# object <- TRACE_workflow(object)
-# cn_ratio <- TRACE_get_CN_labelling_ratio(object)
-# head(cn_ratio)
-```
+3. the ratio should be normalized to the average of C0N0(S12C14N), not the sum of the 4 groups of samples.
+4. when the formula is CXN0, the C0NY should be equal to C0N0, the CXNY should be equal to CXN0, not NA
+5. add an argument 'eval_top', slice the top prop of eval_top TRACE_cor of the TRACE_CN_labelling_ratio to evaluate the labelling ratio. calculate the median of the labelling ratio of each group using the top eval_top TRACE_cor. message: 'Evaluate the adjusted labelling ratio with top xx% TRACE_cor, run TRACE_get_CN_net(ratio.adjust = c(A,B,C,D)) to get the best CN label.'
+6. add argument 'plot', if TRUE, plot the labelling ratio of each group using ggplot2
+7. the result of TRACE_CN_labelling_ratio_adjust should be stored in the MSdev object@advancedAna$TRACE_temp$cn.group.ratio
+8. add argument 'reconstruct' to the function, if TRUE, reconstruct the CN_hit with the labelling ratio of the 4 groups of samples.
+
+
+## TRACE_get_CN_net
+1. add argument 'ratio.adjust' to the function, the default value is c(1,1,1,1), this ratio was used to compare pattern of CN features, and pass into 'get_ideal_CN_ratio' to get the theoretical labelling ratio of the CN_hit in the 4 groups of samples.
+2. add argument 'TRACE_cor_cutoff' to the "TRACE_get_CN_net", the default value is 0.7, this cutoff was used to filter the CN_hit with TRACE_cor less than TRACE_cor_cutoff.

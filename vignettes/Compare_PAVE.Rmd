@@ -1,0 +1,70 @@
+---
+title: "Compare_PAVE"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  html_notebook: default
+vignette: "%\\VignetteIndexEntry{TRACE_Demo} %\\VignetteEngine{knitr::rmarkdown} %\\VignetteEncoding{UTF-8}\n"
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+### Data set
+
+Example LC-MS data from PAVE: [Google Drive download](https://drive.google.com/open?id=1C7gwniCSwdk2Povc0KpA_BBLbuCkzMRo)
+
+```{r}
+
+raw.data.dir <- "C:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/raw_neg-20251010T060553Z-1-001/raw_neg/"
+dir(raw.data.dir)
+```
+
+### Load data to MSdev object
+
+```{r}
+library(TRACE)
+library(MSdev)
+#object <- MSdev(rawDataDir = raw.data.dir)
+#object <- MSdev_msConvert(object)
+
+object <- MSdev_load("C:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/raw_neg-20251010T060553Z-1-001/MSdev_2026_06_03.Rdata")
+
+object@sampleInfo
+```
+
+### Set sample information and parameters
+
+```{r}
+object <- MSdev_checkSampleInfo(object)
+object <- MSdev_set_param(
+    object,
+    findChromPeaks =
+      xcms::CentWaveParam(
+        ppm = 5,
+        prefilter = c(3,1000),
+        peakwidth = c(10,30),
+        snthresh = 10,
+        fitgauss = T),
+    groupChromPeaks =
+      xcms::PeakDensityParam(
+        sampleGroups = "A",
+        minFraction = 0.6,
+        binSize = 0.002,
+        bw = 5,
+        ppm = 5))
+```
+
+### Extract peaks and group peaks using xcms
+
+```{r}
+#object <- MSdev_xcmsProcessing(object)
+#object@xcmsData
+
+MSdev_save(object)
+```

@@ -4,7 +4,14 @@
 \alias{TRACE_get_CN_net}
 \title{Build initial TRACE CN/adduct/isotope/fragment candidate networks}
 \usage{
-TRACE_get_CN_net(object, i.pol, rt.tol = 10, ppm = 5)
+TRACE_get_CN_net(
+  object,
+  i.pol,
+  rt.tol = 10,
+  ppm = 5,
+  ratio.adjust = c(1, 1, 1, 1),
+  TRACE_cor_cutoff = 0.7
+)
 }
 \arguments{
 \item{object}{MSdev object.}
@@ -14,6 +21,12 @@ TRACE_get_CN_net(object, i.pol, rt.tol = 10, ppm = 5)
 \item{rt.tol}{RT tolerance in seconds.}
 
 \item{ppm}{m/z tolerance in ppm.}
+
+\item{ratio.adjust}{Numeric vector of length 4 used to adjust the
+theoretical CN labelling ratio across `S12C14N`, `S12C15N`,
+`S13C14N`, `S13C15N`.}
+
+\item{TRACE_cor_cutoff}{Minimum `TRACE_cor` to retain a CN hit.}
 }
 \value{
 Updated MSdev object with intermediate data in

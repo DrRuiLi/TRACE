@@ -82,17 +82,17 @@ trace.demo
 
 ### 2.1 find CN labelling
 
-
 ```{r}
-trace.demo <- TRACE_get_CN_net(trace.demo,0)
+trace.demo <- TRACE_get_CN_net(trace.demo,0,ratio.adjust = c(1.0842,0.7641,1.0566,1.0707))
 trace.demo <- TRACE_dynamic_filter(trace.demo,0)
 trace.demo <- TRACE_network_assignment(trace.demo,0)
 trace.demo <- TRACE_annotate(trace.demo,i.pol = 0)
 
-trace.demo <- TRACE_get_CN_net(trace.demo,1)
+trace.demo <- TRACE_get_CN_net(trace.demo,1,ratio.adjust = c(1.0842,0.7641,1.0566,1.0707))
 trace.demo <- TRACE_dynamic_filter(trace.demo,1)
 trace.demo <- TRACE_network_assignment(trace.demo,1)
 trace.demo <- TRACE_annotate(trace.demo,i.pol = 1)
+
 ```
 
 ### 2.x

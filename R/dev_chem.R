@@ -811,11 +811,16 @@ get_CN_mass_diff_table <- function(C_max=100,N_max=20){
 
 }
 
-get_ideal_CN_ratio <- function(C = 10 , N = 2){
+get_ideal_CN_ratio <- function(C = 10 , N = 2, ratio.adjust = c(1, 1, 1, 1)){
 
   m <- diag(rep(1,4))
   colnames(m) <- c("C0N0",paste0("C0N",N),paste0("C",C,"N0"),paste0("C",C,"N",N))
   rownames(m) <- c("S12C14N","S12C15N","S13C14N","S13C15N")
+
+  if (length(ratio.adjust) != 4) {
+    stop("ratio.adjust must have length 4.")
+  }
+  m <- m * as.numeric(ratio.adjust)
 
   if(N==0) m <- m[,c(1,3)]+m[,c(2,4)]
   m <- rbind(m,Blank = 0)
