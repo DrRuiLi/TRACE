@@ -264,6 +264,8 @@ TRACE_dynamic_filter <- function(object, i.pol) {
 
   object <- .trace_set_temp(object, pol, "mz.dyn", ppm.fit)
   object <- .trace_set_temp(object, pol, "rt.dyn", rt.fit)
+  object <- .trace_set_temp(object, pol, "ppm.dyn", ppm.dyn)
+  object <- .trace_set_temp(object, pol, "rt.tol.dyn", rt.tol.dyn)
 
   cols <- c("TRUE" = "red", "FALSE" = "#888888")
 
@@ -387,13 +389,27 @@ TRACE_dynamic_filter <- function(object, i.pol) {
 
 #' Build TRACE seed network assignment
 #'
+#' Partitions the CN seed graph by MS-derived edge connectivity, then applies
+#' PAVE-style global assignment within each component: all simple paths between
+#' node pairs are scored using accumulated m/z and RT error; paths whose net
+#' chemical formula change matches the MS mass-difference table are blocked.
+#' Nodes are clustered into mutually compatible subnetworks using connection
+#' scores.
+#'
 #' @param object MSdev object.
 #' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#' @param max_path_length Maximum hops for simple-path enumeration (default `6`).
+#' @param connection_cutoff Minimum pairwise connection score to link nodes in the
+#'   same assignment group (default `0.5`).
 #'
-#' @returns Updated MSdev object with seed network stored in
-#'   `object@advancedAna$TRACE_temp[[pol]]$cn.seed.ig`.
+#' @returns Updated MSdev object with `cn.seed.ig`, `cn.seed.assign`, and
+#'   `xcms.net.candidate` in `object@advancedAna$TRACE_temp[[pol]]`.
 #' @export
-TRACE_network_assignment <- function(object, i.pol) {
+TRACE_network_assignment <- function(
+    object,
+    i.pol,
+    max_path_length = 6L,
+    connection_cutoff = 0.5) {
   object <- .trace_init_temp(object)
   pol <- .trace_get_pol(i.pol)
 
@@ -409,56 +425,26 @@ TRACE_network_assignment <- function(object, i.pol) {
 
   if (!nrow(cn.net.hit)) {
     object <- .trace_set_temp(object, pol, "cn.seed.ig", NULL)
+    object <- .trace_set_temp(object, pol, "cn.seed.assign", NULL)
     return(object)
   }
 
-  cn.seed <- cn.net.hit$from
+  cn.seed <- as.character(unique(cn.net.hit$from))
   cn.seed.formula <- cn.net.hit[, .SD[1], by = from]
   cn.seed.formula <- setNames(cn.seed.formula$TRACE_formula, cn.seed.formula$from)
 
-  ad.net.cs <- ad.net[from %in% cn.seed & to %in% cn.seed]
-  is.net.cs <- is.net[from %in% cn.seed & to %in% cn.seed]
-  fg.net.cs <- fg.net[from %in% cn.seed & to %in% cn.seed]
-  cn.seed.net <- dplyr::bind_rows(ad.net.cs, is.net.cs, fg.net.cs) %>%
-    data.table::as.data.table()
+  xcms.net.candidate <- .trace_build_candidate_net(cn.net.hit, ad.net, is.net, fg.net)
+  object <- .trace_set_temp(object, pol, "xcms.net.candidate", xcms.net.candidate)
 
-  .equal.cn.chemform <- function(cn.diff, chemfrom.diff) {
-    m <- MSCC::chemform_parse(c(cn.diff, chemfrom.diff))
-    m <- MSdev::get_matrix_value_fill_with_NA(m, colnames_vec = c("C", "N"))
-    m[is.na(m)] <- 0
-    m1 <- m[seq_along(cn.diff), ]
-    m2 <- m[length(cn.diff) + seq_along(cn.diff), ]
-    eq <- m1[, "C"] == m2[, "C"] & m1[, "N"] == m2[, "N"]
-    unname(eq)
-  }
+  cn.seed.net <- xcms.net.candidate[
+    as.character(from) %in% cn.seed & as.character(to) %in% cn.seed
+  ]
+  cn.seed.net <- .trace_retype_seed_edges(
+    data.table::as.data.table(cn.seed.net),
+    cn.seed.formula
+  )
 
-  cn.seed.net <- cn.seed.net %>%
-    dplyr::mutate(
-      chemform_diff = chemform_simplify(chemform_diff),
-      label = dplyr::case_when(type == "adduct" ~ paste0(adduct.from, ">>", adduct.to), TRUE ~ chemform_diff),
-      label = paste0(type, ": ", label),
-      from.cn = cn.seed.formula[as.character(from)],
-      to.cn = cn.seed.formula[as.character(to)],
-      cn.diff = MSCC::chemform_calc(to.cn, from.cn, "-", return = "chemform"),
-      cn.equal = cn.diff == "",
-      chemform.equal = .equal.cn.chemform(cn.diff, chemform_diff),
-      new.type = dplyr::case_when(
-        type == "adduct" & cn.equal ~ "adduct",
-        type == "adduct" & !cn.equal & chemform.equal ~ "false",
-        type == "adduct" & !cn.equal & !chemform.equal ~ "false",
-        type == "fragment" & chemform.equal ~ "fragment",
-        type == "fragment" & !chemform.equal ~ "false",
-        type == "isotope" & chemform.equal ~ "isotope",
-        type == "isotope" & !chemform.equal & element == "[13]C" & cn.diff == "C-2" ~ "isotope",
-        TRUE ~ "false"
-      ),
-      old.type = type,
-      type = new.type
-    ) %>%
-    dplyr::filter(type != "false") %>%
-    dplyr::mutate(eid = dplyr::row_number())
-
-  cn.seed.node <- data.frame(name = as.character(unique(cn.seed))) %>%
+  cn.seed.node <- data.frame(name = cn.seed, stringsAsFactors = FALSE) %>%
     dplyr::mutate(
       color = dplyr::case_when(name %in% cn.net.hit$from ~ "#E64B35", TRUE ~ "#97C2FC"),
       TRACE_formula = cn.seed.formula[name],
@@ -467,9 +453,28 @@ TRACE_network_assignment <- function(object, i.pol) {
       label = paste0(TRACE_formula, "\n", name)
     )
 
+  cn.seed.ig.full <- igraph::graph_from_data_frame(cn.seed.net, vertices = cn.seed.node)
+  cn.seed.assign <- .trace_run_global_assignment(
+    cn.seed.ig.full,
+    cn.seed,
+    i.pol = i.pol,
+    object = object,
+    pol = pol,
+    max_path_length = max_path_length,
+    connection_cutoff = connection_cutoff
+  )
+
+  cn.seed.node <- cn.seed.node %>%
+    dplyr::left_join(
+      cn.seed.assign %>% dplyr::select(name, assign.group, assign.seed, conn.component),
+      by = "name"
+    )
+
   cn.seed.ig <- igraph::graph_from_data_frame(cn.seed.net, vertices = cn.seed.node)
 
   object <- .trace_set_temp(object, pol, "cn.seed.ig", cn.seed.ig)
+  object <- .trace_set_temp(object, pol, "cn.seed.ig.full", cn.seed.ig.full)
+  object <- .trace_set_temp(object, pol, "cn.seed.assign", cn.seed.assign)
   object
 }
 
@@ -509,6 +514,14 @@ TRACE_annotate <- function(
     dplyr::filter(findInterval(chemform.adduct.mz, MSdev::mzrange(xcms.xcms)) == 1)
 
   cn.seed.vdata <- MSdev::vdata(cn.seed.ig)
+  cn.seed.assign <- .trace_get_temp(object, pol, "cn.seed.assign")
+  if (!is.null(cn.seed.assign)) {
+    cn.seed.vdata <- cn.seed.vdata %>%
+      dplyr::left_join(
+        cn.seed.assign %>% dplyr::select(name, assign.group, assign.seed, conn.component),
+        by = "name"
+      )
+  }
   matched.df <- MSdev::match_mz_foverlaps(
     mz1 = cn.seed.vdata$mz,
     mz2 = cp.adduct$chemform.adduct.mz,
@@ -585,10 +598,14 @@ TRACE_annotate <- function(
       x.anno <- anno %>%
         dplyr::filter(type %in% c("fragment", "isotope")) %>%
         dplyr::slice_head(n = 1)
+      x.seed <- x.anno$seed
+      if (!is.null(cn.seed.assign) && x.name %in% cn.seed.assign$name) {
+        x.seed <- cn.seed.assign$assign.seed[match(x.name, cn.seed.assign$name)]
+      }
       return(data.frame(
         name = x.name,
         type = x.anno$type,
-        seed = x.anno$seed,
+        seed = x.seed,
         score = 0,
         compound.id = NA,
         compound.formula = NA,
@@ -655,23 +672,45 @@ TRACE_annotate <- function(
     dplyr::filter(type %in% "unknown") %>%
     dplyr::mutate(type = ifelse(name %in% cn.seed.vdata.fi$seed, "metabolite", type), seed = name)
 
-  uk.m <- MSdev::igraph_filter_vertex(cn.seed.ig, dplyr::pull(cn.seed.vdata.unknown, name)) %>%
-    MSdev::get_igraph_membership()
-  cn.seed.vdata.unknown <- cn.seed.vdata.unknown %>%
-    dplyr::mutate(membership = uk.m[name]) %>%
-    dplyr::group_by(membership) %>%
-    dplyr::arrange(type) %>%
-    dplyr::mutate(
-      temp = seq_len(dplyr::n()),
-      type = dplyr::case_when(temp == 1 ~ "metabolite", TRUE ~ "adduct"),
-      seed = dplyr::first(name)
-    )
+  if (!is.null(cn.seed.assign) && "assign.group" %in% names(cn.seed.vdata.unknown)) {
+    cn.seed.vdata.unknown <- cn.seed.vdata.unknown %>%
+      dplyr::group_by(assign.group) %>%
+      dplyr::arrange(type) %>%
+      dplyr::mutate(
+        temp = seq_len(dplyr::n()),
+        type = dplyr::case_when(temp == 1L ~ "metabolite", TRUE ~ "adduct"),
+        seed = dplyr::first(assign.seed)
+      ) %>%
+      dplyr::ungroup()
+  } else {
+    uk.m <- MSdev::igraph_filter_vertex(cn.seed.ig, dplyr::pull(cn.seed.vdata.unknown, name)) %>%
+      MSdev::get_igraph_membership()
+    cn.seed.vdata.unknown <- cn.seed.vdata.unknown %>%
+      dplyr::mutate(membership = uk.m[name]) %>%
+      dplyr::group_by(membership) %>%
+      dplyr::arrange(type) %>%
+      dplyr::mutate(
+        temp = seq_len(dplyr::n()),
+        type = dplyr::case_when(temp == 1L ~ "metabolite", TRUE ~ "adduct"),
+        seed = dplyr::first(name)
+      ) %>%
+      dplyr::ungroup()
+  }
 
-  cn.seed.vdata3 <- rbind(cn.seed.vdata.known, cn.seed.vdata.unknown, cn.seed.vdata.fi) %>%
+  cn.seed.vdata3 <- rbind(cn.seed.vdata.known, cn.seed.vdata.unknown, cn.seed.vdata.fi)
+  if (!is.null(cn.seed.assign)) {
+    cn.seed.vdata3 <- cn.seed.vdata3 %>%
+      dplyr::left_join(
+        cn.seed.assign %>% dplyr::select(name, assign.group, assign.seed, conn.component),
+        by = "name"
+      )
+  }
+  cn.seed.vdata3 <- cn.seed.vdata3 %>%
     dplyr::select(
       feature_id = name,
       TRACE_formula,
       mz, rt, type, seed,
+      dplyr::any_of(c("assign.group", "assign.seed", "conn.component")),
       compound_id = compound.id, compound.formula,
       compound.adduct, compound.rt
     )
@@ -699,7 +738,7 @@ TRACE_workflow <- function(
     object,
     rt.tol = 10,
     ppm = 5,
-    cpdb = "d:/data/2025.12.26.TRACE2/trace.cp.db.xlsx") {
+    cpdb = "d:/data/2025.12.26.PAVE2/trace.cp.db.xlsx") {
   object <- .trace_init_temp(object)
   for (i.pol in 0:1) {
     object <- TRACE_get_CN_net(object, i.pol = i.pol, rt.tol = rt.tol, ppm = ppm)
