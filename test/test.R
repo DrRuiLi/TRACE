@@ -12,11 +12,12 @@
                                    ratio.adjust = c(1.0842,0.7641,1.0566,1.0707))
   }
 
-  a <- TRACE_get_CN_labelling_ratio(trace.demo,eval_top = 1,plot = T,)
+  a <- get_TRACE_CN_labelling_ratio(trace.demo,eval_top = 1,plot = T)
+  a <- trace.demo@advancedAna$TRACE_temp$cn.ratio.df
 
-  trace.demo <- TRACE_CN_labelling_ratio_adjust(trace.demo,eval_top = 0.3,plot = T,reconstruct = T)
+  #trace.demo <- TRACE_CN_labelling_ratio_adjust(trace.demo,eval_top = 0.3,plot = T,reconstruct = T)
 
-  ratio.adj <- c(1.0782,0.6663,1.0357,1.0992)
+  ratio.adj <- c(1.0688,0.6341,1.0480,1.1131)
   names(ratio.adj) <- names(a)[4:7]
 
   df <- a%>%
@@ -30,7 +31,7 @@
 
 
 
-  ggplot(df,aes(x = name , y = value, col = TRACE_cor))+
+  p <- ggplot(df,aes(x = name , y = value, col = TRACE_cor))+
     geom_jitter(
       alpha = 0.2
     )+
@@ -44,14 +45,20 @@
       size = 0.5
     ) +
     geom_hline(yintercept = 1)+
-    scale_color_gradient(low = "yellow",high = "red")
+    scale_color_gradient(low = "yellow",high = "red")+
+    labs(x = NULL, y = "Ratio")+
+    theme_bw()
+
+  open_plot_win(p,5,3)
 
 
-
-
-  ggplot(df,aes(x = TRACE_cor , y = ratio.error,col = TRACE_cor))+
+  p <- ggplot(df,aes(x = TRACE_cor , y = ratio.error,col = TRACE_cor))+
     geom_point(alpha = 0.3)+
-    scale_color_gradient(low = "yellow",high = "red")
+    scale_color_gradient(low = "yellow",high = "red")+
+    labs(y = "Ratio shift")+
+    theme_bw()
+
+  open_plot_win(p)
 
   library(ggridges)
 
@@ -62,8 +69,26 @@
     theme_bw(base_size =  6 )+
     theme(legend.key.size = unit(0.1,"inch") )
 
-  open_plot_win(p,3,3)
+  open_plot_win(p,2.5,3)
 
+
+
+  object <- TRACE_network_assignment(object ,i.pol = 0)
+  object <- TRACE_annotate(object,i.pol = 0)
+
+  object <- TRACE_network_assignment(object ,i.pol = 1)
+  object <- TRACE_annotate(object,i.pol = 1)
 
 
 }
+# Thu Jun  4 16:02:11 2026 ------------------------------
+{
+
+
+  obj <- MSdev_load("d:/data/2025.12.26.PAVE2/PAVE_With_Params/OE480_120k_ppm10_sn10.rdata")
+  obj <- MSdev:::.update_MSdev_object(obj)
+  obj <- TRACE_workflow(obj)
+
+}
+
+

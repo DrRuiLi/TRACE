@@ -63,8 +63,14 @@ analysis should be stored in the MSdev object@advancedAna$TRACE_temp
 6. add argument 'plot', if TRUE, plot the labelling ratio of each group using ggplot2
 7. the result of TRACE_CN_labelling_ratio_adjust should be stored in the MSdev object@advancedAna$TRACE_temp$cn.group.ratio
 8. add argument 'reconstruct' to the function, if TRUE, reconstruct the CN_hit with the labelling ratio of the 4 groups of samples.
+9. rename 'TRACE_get_CN_labelling_ratio' to 'get_TRACE_CN_labelling_ratio', 'TRACE_CN_labelling_ratio_adjust' also store the ratio.df
+10. integrate the function into the TRACE_workflow, call the function in the TRACE_workflow after 'TRACE_get_CN_net'
 
 
 ## TRACE_get_CN_net
 1. add argument 'ratio.adjust' to the function, the default value is c(1,1,1,1), this ratio was used to compare pattern of CN features, and pass into 'get_ideal_CN_ratio' to get the theoretical labelling ratio of the CN_hit in the 4 groups of samples.
 2. add argument 'TRACE_cor_cutoff' to the "TRACE_get_CN_net", the default value is 0.7, this cutoff was used to filter the CN_hit with TRACE_cor less than TRACE_cor_cutoff.
+
+
+## TRACE_export
+1. write a function TRACE_export to export the TRACE result to a xlsx file.

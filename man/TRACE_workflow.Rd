@@ -8,7 +8,10 @@ TRACE_workflow(
   object,
   rt.tol = 10,
   ppm = 5,
-  cpdb = "d:/data/2025.12.26.TRACE2/trace.cp.db.xlsx"
+  cpdb = "d:/data/2025.12.26.PAVE2/trace.cp.db.xlsx",
+  eval_top = 0.2,
+  ratio.plot = FALSE,
+  ratio.reconstruct = TRUE
 )
 }
 \arguments{
@@ -19,6 +22,15 @@ TRACE_workflow(
 \item{ppm}{m/z tolerance in ppm.}
 
 \item{cpdb}{Path to compound table xlsx used for candidate assignment.}
+
+\item{eval_top}{Proportion in `(0, 1]` passed to
+`TRACE_CN_labelling_ratio_adjust()` for top-`TRACE_cor` ratio evaluation.}
+
+\item{ratio.plot}{Logical. If `TRUE`, draw the CN labelling-ratio plot in
+`TRACE_CN_labelling_ratio_adjust()`.}
+
+\item{ratio.reconstruct}{Logical. If `TRUE`, re-run `TRACE_get_CN_net()`
+with evaluated group ratios after CN net construction.}
 }
 \value{
 Updated MSdev object with final outputs in `object@advancedAna$TRACE`

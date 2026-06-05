@@ -4,17 +4,32 @@
 \alias{TRACE_network_assignment}
 \title{Build TRACE seed network assignment}
 \usage{
-TRACE_network_assignment(object, i.pol)
+TRACE_network_assignment(
+  object,
+  i.pol,
+  max_path_length = 6L,
+  connection_cutoff = 0.5
+)
 }
 \arguments{
 \item{object}{MSdev object.}
 
 \item{i.pol}{Polarity index. `0` for negative and `1` for positive.}
+
+\item{max_path_length}{Maximum hops for simple-path enumeration (default `6`).}
+
+\item{connection_cutoff}{Minimum pairwise connection score to link nodes in the
+same assignment group (default `0.5`).}
 }
 \value{
-Updated MSdev object with seed network stored in
-  `object@advancedAna$TRACE_temp[[pol]]$cn.seed.ig`.
+Updated MSdev object with `cn.seed.ig`, `cn.seed.assign`, and
+  `xcms.net.candidate` in `object@advancedAna$TRACE_temp[[pol]]`.
 }
 \description{
-Build TRACE seed network assignment
+Partitions the CN seed graph by MS-derived edge connectivity, then applies
+PAVE-style global assignment within each component: all simple paths between
+node pairs are scored using accumulated m/z and RT error; paths whose net
+chemical formula change matches the MS mass-difference table are blocked.
+Nodes are clustered into mutually compatible subnetworks using connection
+scores.
 }

@@ -29,7 +29,8 @@ Updated MSdev object.
 \description{
 This function calculates the labelling ratio of each CN hit across the
 4 TRACE sample groups, stores the evaluated group-level ratio in
-`object@advancedAna$TRACE_temp$cn.group.ratio`, and optionally
-reconstructs the CN hit network by re-running `TRACE_get_CN_net()` with
-the new `ratio.adjust`.
+`object@advancedAna$TRACE_temp$cn.group.ratio` and per-seed ratios in
+`object@advancedAna$TRACE_temp$cn.ratio.df`, and optionally reconstructs
+the CN hit network by re-running `TRACE_get_CN_net()` with the new
+`ratio.adjust`.
 }

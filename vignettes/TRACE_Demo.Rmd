@@ -93,6 +93,37 @@ trace.demo <- TRACE_dynamic_filter(trace.demo,1)
 trace.demo <- TRACE_network_assignment(trace.demo,1)
 trace.demo <- TRACE_annotate(trace.demo,i.pol = 1)
 
+trace.demo <- TRACE_CN_labelling_ratio_adjust(trace.demo,eval_top = 0.3,plot = T)
+
 ```
 
-### 2.x
+
+
+## 3. TRACE paramers sensitivity
+TRACE utilize xcms to extract peaks and group peaks, so the parameters of xcms will affect the TRACE result.
+`xcms::CentWaveParam()' was usually used for peak detection
+``` {r}
+xcms::CentWaveParam()
+```
+
+we set parameters grid as follows:
+
+``` {r}
+param.list <- list(
+  cw1 = xcms::CentWaveParam(ppm = 5, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 10),
+  cw2 = xcms::CentWaveParam(ppm = 5, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 100),
+  cw3 = xcms::CentWaveParam(ppm = 10, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 10),
+  cw4 = xcms::CentWaveParam(ppm = 20, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 10),
+  cw5 = xcms::CentWaveParam(ppm = 5, prefilter = c(5,1000), peakwidth = c(10,30), snthresh = 10))
+)
+
+for(i in 1:length(param.list)){
+  trace.demo <- MSdev_set_param(trace.demo, findChromPeaks = param.list[[i]])
+  trace.demo <- MSdev_xcmsProcessing(trace.demo)
+  trace.demo <- TRACE_workflow(trace.demo)
+  save.name <- paste0("TRACE_xcms_sensitivity_ppm_",param.list[[i]]@ppm,"_sn_",param.list[[i]]@snthresh,"_prefilter_",param.list[[i]]@prefilter[1],"_",param.list[[i]]@prefilter[2],".Rdata")
+  save.file <- paste0("d:/data/2025.12.26.PAVE2/xcms_sensitivity/",save.name)
+  MSdev_save(trace.demo,save.file)
+}
+``` 
+
