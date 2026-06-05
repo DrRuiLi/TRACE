@@ -730,6 +730,12 @@ TRACE_annotate <- function(
 #' @param rt.tol RT tolerance in seconds.
 #' @param ppm m/z tolerance in ppm.
 #' @param cpdb Path to compound table xlsx used for candidate assignment.
+#' @param eval_top Proportion in `(0, 1]` passed to
+#'   `TRACE_CN_labelling_ratio_adjust()` for top-`TRACE_cor` ratio evaluation.
+#' @param ratio.plot Logical. If `TRUE`, draw the CN labelling-ratio plot in
+#'   `TRACE_CN_labelling_ratio_adjust()`.
+#' @param ratio.reconstruct Logical. If `TRUE`, re-run `TRACE_get_CN_net()`
+#'   with evaluated group ratios after CN net construction.
 #'
 #' @returns Updated MSdev object with final outputs in `object@advancedAna$TRACE`
 #'   and intermediate outputs in `object@advancedAna$TRACE_temp`.
@@ -738,10 +744,21 @@ TRACE_workflow <- function(
     object,
     rt.tol = 10,
     ppm = 5,
-    cpdb = "d:/data/2025.12.26.PAVE2/trace.cp.db.xlsx") {
+    cpdb = "d:/data/2025.12.26.PAVE2/trace.cp.db.xlsx",
+    eval_top = 0.2,
+    ratio.plot = FALSE,
+    ratio.reconstruct = TRUE) {
   object <- .trace_init_temp(object)
   for (i.pol in 0:1) {
     object <- TRACE_get_CN_net(object, i.pol = i.pol, rt.tol = rt.tol, ppm = ppm)
+  }
+  object <- TRACE_CN_labelling_ratio_adjust(
+    object,
+    eval_top = eval_top,
+    plot = ratio.plot,
+    reconstruct = ratio.reconstruct
+  )
+  for (i.pol in 0:1) {
     object <- TRACE_dynamic_filter(object, i.pol = i.pol)
     object <- TRACE_network_assignment(object, i.pol = i.pol)
     object <- TRACE_annotate(object, i.pol = i.pol, cpdb = cpdb)
@@ -760,7 +777,7 @@ TRACE_workflow <- function(
 #' @returns A data.frame with columns `TRACE_seed`, `TRACE_formula`,
 #'   `TRACE_cor`, `S12C14N`, `S12C15N`, `S13C14N`, `S13C15N`.
 #' @export
-TRACE_get_CN_labelling_ratio <- function(object, eval_top = 0.2, plot = FALSE) {
+get_TRACE_CN_labelling_ratio <- function(object, eval_top = 0.2, plot = FALSE) {
   if (!is.numeric(eval_top) || length(eval_top) != 1 || is.na(eval_top) || eval_top <= 0 || eval_top > 1) {
     stop("eval_top must be a numeric scalar in (0, 1].")
   }
@@ -930,9 +947,10 @@ TRACE_get_CN_labelling_ratio <- function(object, eval_top = 0.2, plot = FALSE) {
 #'
 #' This function calculates the labelling ratio of each CN hit across the
 #' 4 TRACE sample groups, stores the evaluated group-level ratio in
-#' `object@advancedAna$TRACE_temp$cn.group.ratio`, and optionally
-#' reconstructs the CN hit network by re-running `TRACE_get_CN_net()` with
-#' the new `ratio.adjust`.
+#' `object@advancedAna$TRACE_temp$cn.group.ratio` and per-seed ratios in
+#' `object@advancedAna$TRACE_temp$cn.ratio.df`, and optionally reconstructs
+#' the CN hit network by re-running `TRACE_get_CN_net()` with the new
+#' `ratio.adjust`.
 #'
 #' @param object MSdev object.
 #' @param eval_top Proportion in `(0, 1]` used to select top `TRACE_cor`
@@ -949,7 +967,7 @@ TRACE_CN_labelling_ratio_adjust <- function(object, eval_top = 0.2, plot = FALSE
     stop("reconstruct must be a single TRUE/FALSE value.")
   }
 
-  ratio.df <- TRACE_get_CN_labelling_ratio(object, eval_top = eval_top, plot = plot)
+  ratio.df <- get_TRACE_CN_labelling_ratio(object, eval_top = eval_top, plot = plot)
   cn.group.ratio <- attr(ratio.df, "cn.group.ratio", exact = TRUE)
   sample.types <- c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
 
@@ -960,6 +978,7 @@ TRACE_CN_labelling_ratio_adjust <- function(object, eval_top = 0.2, plot = FALSE
     object@advancedAna$TRACE_temp$cn.group.ratio <- list()
   }
   object@advancedAna$TRACE_temp$cn.group.ratio[["all"]] <- cn.group.ratio
+  object@advancedAna$TRACE_temp$cn.ratio.df <- ratio.df
 
   if (reconstruct) {
     ratio.adjust <- cn.group.ratio[sample.types]
@@ -987,4 +1006,74 @@ TRACE_CN_labelling_ratio_adjust <- function(object, eval_top = 0.2, plot = FALSE
   }
 
   object
+}
+
+#' Export TRACE results to xlsx
+#'
+#' Writes final TRACE annotation tables from `object@advancedAna$TRACE` to an
+#' Excel workbook. When available, CN labelling-ratio tables from
+#' `object@advancedAna$TRACE_temp` are included as additional sheets.
+#'
+#' @param object MSdev object with TRACE results in `object@advancedAna$TRACE`.
+#' @param file Output xlsx path. Default is
+#'   `file.path(object@projectInfo$projectDir, "Statistic", "TRACE.xlsx")`
+#'   when `projectDir` is set; otherwise
+#'   `paste0(object@projectInfo$MSdevFile, ".TRACE.xlsx")`.
+#'
+#' @returns Invisibly, the output file path.
+#' @export
+TRACE_export <- function(object, file = NULL) {
+  trace <- object@advancedAna$TRACE
+  if (is.null(trace)) {
+    stop("No TRACE results found in object@advancedAna$TRACE. Run TRACE_workflow() first.")
+  }
+
+  if (is.null(file)) {
+    if (!is.null(object@projectInfo$projectDir)) {
+      file <- file.path(object@projectInfo$projectDir, "Statistic", "TRACE.xlsx")
+    } else if (!is.null(object@projectInfo$MSdevFile)) {
+      file <- paste0(object@projectInfo$MSdevFile, ".TRACE.xlsx")
+    } else {
+      stop("file must be provided when object@projectInfo$projectDir and MSdevFile are NULL.")
+    }
+  }
+
+  df.list <- list()
+  for (pol in c("Negative", "Positive")) {
+    x <- trace[[pol]]
+    if (!is.null(x)) {
+      df.list[[pol]] <- as.data.frame(x)
+    }
+  }
+
+  ratio.df <- object@advancedAna$TRACE_temp$cn.ratio.df
+  if (!is.null(ratio.df)) {
+    df.list[["CN_labelling_ratio"]] <- as.data.frame(ratio.df)
+  }
+
+  cn.group.ratio <- object@advancedAna$TRACE_temp$cn.group.ratio[["all"]]
+  if (!is.null(cn.group.ratio) && length(cn.group.ratio)) {
+    df.list[["CN_group_ratio"]] <- data.frame(
+      sample.type = names(cn.group.ratio),
+      ratio = as.numeric(cn.group.ratio),
+      row.names = NULL,
+      check.names = FALSE
+    )
+  }
+
+  if (!length(df.list)) {
+    stop("No TRACE data available to export.")
+  }
+
+  out.dir <- dirname(file)
+  if (nzchar(out.dir) && out.dir != ".") {
+    dir.create(out.dir, recursive = TRUE, showWarnings = FALSE)
+  }
+
+  MSdev::xlsx.write.list(df.list, file = file)
+  MSdev::message_with_time(
+    "Exported TRACE results to: ",
+    normalizePath(file, winslash = "/", mustWork = FALSE)
+  )
+  invisible(file)
 }
