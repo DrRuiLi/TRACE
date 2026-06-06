@@ -1,11 +1,11 @@
 #' Get polarity label for TRACE workflow
-#' @keywords internal
+#' @noRd
 .trace_get_pol <- function(i.pol) {
   ifelse(i.pol == 0, "Negative", "Positive")
 }
 
 #' Initialize TRACE_temp container on MSdev object
-#' @keywords internal
+#' @noRd
 .trace_init_temp <- function(object) {
   if (is.null(object@advancedAna$TRACE_temp)) {
     object@advancedAna$TRACE_temp <- list()
@@ -14,13 +14,13 @@
 }
 
 #' Read a value from TRACE_temp
-#' @keywords internal
+#' @noRd
 .trace_get_temp <- function(object, pol, key) {
   object@advancedAna$TRACE_temp[[pol]][[key]]
 }
 
 #' Write a value to TRACE_temp
-#' @keywords internal
+#' @noRd
 .trace_set_temp <- function(object, pol, key, value) {
   object@advancedAna$TRACE_temp[[pol]][[key]] <- value
   object

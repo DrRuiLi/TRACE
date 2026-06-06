@@ -18,7 +18,8 @@ when `projectDir` is set; otherwise
 Invisibly, the output file path.
 }
 \description{
-Writes final TRACE annotation tables from `object@advancedAna$TRACE` to an
-Excel workbook. When available, CN labelling-ratio tables from
-`object@advancedAna$TRACE_temp` are included as additional sheets.
+Writes TRACE results to an Excel workbook, including one sheet per polarity
+with **all xcms features** and their TRACE annotations (if present).
+Additional sheets include the raw TRACE annotation tables and (when
+available) CN labelling-ratio outputs from `object@advancedAna$TRACE_temp`.
 }

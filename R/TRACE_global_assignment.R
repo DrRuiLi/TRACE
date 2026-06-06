@@ -8,7 +8,7 @@
 # - Clustering: connected components on pairs with score >= connection_cutoff (default 0.5)
 
 #' Dynamic ppm / RT tolerances from TRACE_temp
-#' @keywords internal
+#' @noRd
 .trace_dyn_tolerance <- function(object, pol) {
   mz.fit <- .trace_get_temp(object, pol, "mz.dyn")
   rt.fit <- .trace_get_temp(object, pol, "rt.dyn")
@@ -32,7 +32,7 @@
 }
 
 #' MS-derived chemform lookup for path blocking
-#' @keywords internal
+#' @noRd
 .trace_ms_mass_diff_chemforms <- function(i.pol) {
   ad <- get_adduct_mass_diff(polarity = i.pol)$chemform_diff
   fg <- get_fragment_mass_diff()$chemform_diff
@@ -41,7 +41,7 @@
 }
 
 #' Build deduplicated candidate edge table (legacy PAVE integration)
-#' @keywords internal
+#' @noRd
 .trace_build_candidate_net <- function(cn.net.hit, ad.net, is.net, fg.net) {
   cn.cn <- data.table::copy(cn.net.hit)
   cn.cn[, type := "CN_label"]
@@ -67,7 +67,7 @@
 }
 
 #' Per-edge CN consistency retyping (seed subgraph)
-#' @keywords internal
+#' @noRd
 .trace_retype_seed_edges <- function(cn.seed.net, cn.seed.formula) {
   .equal.cn.chemform <- function(cn.diff, chemfrom.diff) {
     m <- MSCC::chemform_parse(c(cn.diff, chemfrom.diff))
@@ -110,7 +110,7 @@
 }
 
 #' Ordered edge rows along a vertex path
-#' @keywords internal
+#' @noRd
 .trace_path_edge_rows <- function(eda, vpath) {
   vpath <- as.character(vpath)
   out <- vector("list", length(vpath) - 1L)
@@ -132,7 +132,7 @@
 }
 
 #' Score one simple path; blocked if net chemform matches MS mass-diff table
-#' @keywords internal
+#' @noRd
 .trace_score_path <- function(eda, vpath, blocked_chemforms, ppm.dyn, rt.tol.dyn) {
   if (length(vpath) < 2L) {
     return(list(score = 1, blocked = FALSE, net_chemform = ""))
@@ -160,7 +160,7 @@
 }
 
 #' Best connection score between two nodes (max over simple paths)
-#' @keywords internal
+#' @noRd
 .trace_pair_connection_score <- function(
     ig,
     from,
@@ -202,7 +202,7 @@
 }
 
 #' Global assignment within one connectivity component
-#' @keywords internal
+#' @noRd
 .trace_global_assign_component <- function(
     ig,
     nodes,
@@ -255,7 +255,7 @@
 }
 
 #' Run PAVE-style global assignment for all CN seeds
-#' @keywords internal
+#' @noRd
 .trace_run_global_assignment <- function(
     cn.seed.ig.full,
     cn.seed,
