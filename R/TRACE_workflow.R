@@ -1010,9 +1010,10 @@ TRACE_CN_labelling_ratio_adjust <- function(object, eval_top = 0.2, plot = FALSE
 
 #' Export TRACE results to xlsx
 #'
-#' Writes final TRACE annotation tables from `object@advancedAna$TRACE` to an
-#' Excel workbook. When available, CN labelling-ratio tables from
-#' `object@advancedAna$TRACE_temp` are included as additional sheets.
+#' Writes TRACE results to an Excel workbook, including one sheet per polarity
+#' with **all xcms features** and their TRACE annotations (if present).
+#' Additional sheets include the raw TRACE annotation tables and (when
+#' available) CN labelling-ratio outputs from `object@advancedAna$TRACE_temp`.
 #'
 #' @param object MSdev object with TRACE results in `object@advancedAna$TRACE`.
 #' @param file Output xlsx path. Default is
@@ -1041,8 +1042,26 @@ TRACE_export <- function(object, file = NULL) {
   df.list <- list()
   for (pol in c("Negative", "Positive")) {
     x <- trace[[pol]]
-    if (!is.null(x)) {
-      df.list[[pol]] <- as.data.frame(x)
+
+    # All features (from xcms) + left-join TRACE annotations by feature_id.
+    xcms.xcms <- object@xcmsData[[paste0(pol, "MS1")]]
+    if (!is.null(xcms.xcms)) {
+      fdf <- xcms::featureDefinitions(xcms.xcms)
+      all.df <- as.data.frame(fdf)
+      all.df$feature_id <- as.character(seq_len(nrow(all.df)))
+
+      if (!is.null(x) && nrow(x)) {
+        x.df <- as.data.frame(x)
+        x.df$feature_id <- as.character(x.df$feature_id)
+        all.df <- dplyr::left_join(all.df, x.df, by = "feature_id")
+      }
+
+      df.list[[paste0("AllFeatures_", pol)]] <- all.df
+    }
+
+    # Raw TRACE annotation table (only features in seed network)
+    if (!is.null(x) && nrow(x)) {
+      df.list[[paste0("TRACE_", pol)]] <- as.data.frame(x)
     }
   }
 
