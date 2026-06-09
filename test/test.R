@@ -257,4 +257,260 @@
   )
 }
 
+# Fri Jun  6 15:00:00 2026 ------------------------------
+# CN net compare: exclusive CN-assigned features (TRACE vs PAVE-matlab)
+{
+  library(dplyr)
+  library(ggplot2)
+  library(MSdev)
+
+  pave.file <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"
+  trace.file <- "d:/temp/TRACE.xlsx"
+  trace.sheet <- "AllFeatures_Negative"
+
+  pave <- openxlsx::read.xlsx(pave.file, cols = 1:17) %>%
+    dplyr::select(feature_id, feature, C_num, N_num, score) %>%
+    dplyr::mutate(
+      feature_id_num = as.integer(gsub("[^0-9]+", "", feature_id)),
+      pave_cn = !is.na(feature) &
+        feature != "Background" &
+        is.finite(score) &
+        score > 0.7
+    )
+
+  trace <- openxlsx::read.xlsx(
+    trace.file,
+    sheet = trace.sheet,
+    cols = c(1, 26, 29, 30)
+  ) %>%
+    dplyr::mutate(
+      feature_id_num = as.integer(feature_id),
+      trace_cn = !is.na(type) &
+        type != "" &
+        !is.na(TRACE_formula) &
+        TRACE_formula != ""
+    )
+
+  cmp <- dplyr::inner_join(
+    pave %>% dplyr::select(feature_id_num, pave_cn),
+    trace %>% dplyr::select(feature_id_num, trace_cn),
+    by = "feature_id_num"
+  )
+
+  trace.cn.ids <- cmp$feature_id_num[cmp$trace_cn]
+  pave.cn.ids <- cmp$feature_id_num[cmp$pave_cn]
+  trace.only.ids <- setdiff(trace.cn.ids, pave.cn.ids)
+  pave.only.ids <- setdiff(pave.cn.ids, trace.cn.ids)
+  both.cn.ids <- intersect(trace.cn.ids, pave.cn.ids)
+
+  cn.dist.df <- data.frame(
+    category = c(
+      "TRACE CN only",
+      "PAVE-matlab CN only",
+      "Both CN assigned"
+    ),
+    n = c(
+      length(trace.only.ids),
+      length(pave.only.ids),
+      length(both.cn.ids)
+    ),
+    stringsAsFactors = FALSE
+  )
+  cn.dist.df$ratio <- cn.dist.df$n / sum(cn.dist.df$n)
+
+  cn.exclusive.df <- data.frame(
+    source = c("TRACE", "PAVE-matlab"),
+    exclusive_n = c(length(trace.only.ids), length(pave.only.ids)),
+    total_cn = c(length(trace.cn.ids), length(pave.cn.ids)),
+    stringsAsFactors = FALSE
+  ) %>%
+    dplyr::mutate(
+      exclusive_ratio = exclusive_n / total_cn,
+      label = paste0(
+        formatC(100 * exclusive_ratio, format = "f", digits = 1),
+        "% (n=", exclusive_n, ")"
+      )
+    )
+
+  p.cn.exclusive <- ggplot2::ggplot(
+    cn.exclusive.df,
+    ggplot2::aes(x = source, y = exclusive_ratio, fill = source)
+  ) +
+    ggplot2::geom_col(width = 0.6, alpha = 0.85) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = label),
+      vjust = -0.3,
+      size = 3.5
+    ) +
+    ggplot2::scale_y_continuous(
+      labels = scales::percent_format(accuracy = 1),
+      limits = c(0, 1.05),
+      expand = c(0, 0)
+    ) +
+    ggplot2::scale_fill_manual(values = c("TRACE" = "steelblue", "PAVE-matlab" = "grey60")) +
+    ggplot2::labs(
+      x = NULL,
+      y = "Ratio of CN-assigned features not shared",
+      title = "Exclusive CN assignment: TRACE vs PAVE-matlab",
+      subtitle = paste0(
+        "TRACE CN: ", length(trace.cn.ids),
+        "; PAVE CN: ", length(pave.cn.ids),
+        "; overlap: ", length(both.cn.ids)
+      ),
+      fill = NULL
+    ) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = "none")
+
+  if (interactive()) {
+    open_plot_win(p.cn.exclusive, 5, 4)
+  } else {
+    print(p.cn.exclusive)
+  }
+
+  message(
+    "CN exclusive ratio — TRACE only: ",
+    formatC(100 * cn.exclusive.df$exclusive_ratio[1], format = "f", digits = 1),
+    "% (", cn.exclusive.df$exclusive_n[1], "/", cn.exclusive.df$total_cn[1], "); ",
+    "PAVE only: ",
+    formatC(100 * cn.exclusive.df$exclusive_ratio[2], format = "f", digits = 1),
+    "% (", cn.exclusive.df$exclusive_n[2], "/", cn.exclusive.df$total_cn[2], ")"
+  )
+}
+
+# Fri Jun  6 15:30:00 2026 ------------------------------
+# Merge PAVE-matlab and TRACE results by feature_id
+{
+  library(dplyr)
+
+  pave.file <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"
+  trace.file <- "d:/temp/TRACE.xlsx"
+  trace.sheet <- "AllFeatures_Negative"
+
+  pave.df.raw <- openxlsx::read.xlsx(pave.file)
+  pave.df <- pave.df.raw %>%
+    dplyr::mutate(
+      feature_id = as.integer(gsub("[^0-9]+", "", feature_id)),
+      formula_pave = paste0("C", C_num, "N", N_num),
+      type_pave = dplyr::case_when(
+        is.na(feature) | feature == "Background" ~ "blank/noise",
+        TRUE ~ as.character(feature)
+      ),
+      type_pave = case_when(
+        type_pave %in% c("Metabolite","Isotope","Fragment","Adduct")~type_pave,
+        T~"blank/noise"
+      ),
+      score_pave = score,
+      pave_cn = formula_pave != "C0N0"
+    ) %>%
+    dplyr::select(
+      feature_id,
+      mz_pave = mz,
+      rt_pave = rt,
+      formula_pave,
+      type_pave,
+      score_pave,
+      pave_cn
+    )
+
+  trace.df <- openxlsx::read.xlsx(
+    trace.file,
+    sheet = trace.sheet,
+    cols = c(1, 26, 27, 28, 29, 30)
+  ) %>%
+    dplyr::mutate(
+      feature_id = as.integer(feature_id),
+      formula_trace = as.character(TRACE_formula),
+      type_trace = dplyr::case_when(
+        is.na(type) | type == "" ~ "blank/noise",
+        TRUE ~ as.character(type)
+      ),
+      trace_cn =  !is.na(TRACE_formula),
+      seed_trace = seed
+    ) %>%
+    dplyr::select(
+      feature_id,
+      mz_trace = mz,
+      rt_trace = rt,
+      formula_trace,
+      type_trace,
+      seed_trace,
+      trace_cn
+    )
+
+  ratio.df <- tryCatch(
+    openxlsx::read.xlsx(
+      trace.file,
+      cols = c(1, 2, 3)
+    ),
+    error = function(e) NULL
+  )
+
+  pave.trace.merged <- dplyr::full_join(pave.df, trace.df, by = "feature_id") %>%
+    dplyr::mutate(
+      type_pave = if_else(is.na(type_pave),"blank/noise",type_pave),
+      cn_match = trace_cn &
+        pave_cn &
+        !is.na(formula_trace) &
+        formula_trace != "" &
+        formula_pave == formula_trace,
+      cn_assignment = dplyr::case_when(
+        trace_cn & pave_cn ~ "both",
+        trace_cn & !pave_cn ~ "TRACE_only",
+        !trace_cn & pave_cn ~ "PAVE_only",
+        TRUE ~ "neither"
+      )
+    )
+
+  if (!is.null(ratio.df) && all(c("TRACE_seed", "TRACE_cor") %in% names(ratio.df))) {
+    trace.cor.map <- stats::setNames(ratio.df$TRACE_cor, as.character(ratio.df$TRACE_seed))
+    pave.trace.merged$trace_cor <- as.numeric(
+      trace.cor.map[as.character(pave.trace.merged$seed_trace)]
+    )
+  } else {
+    pave.trace.merged$trace_cor <- NA_real_
+  }
+  pave.trace.merged$trace_cor <- ifelse(
+    is.finite(pave.trace.merged$trace_cor),
+    pave.trace.merged$trace_cor,
+    pave.trace.merged$score_pave
+  )
+
+  pave.trace.merged <- pave.trace.merged %>%
+    dplyr::select(
+      feature_id,
+      formula_pave,
+      formula_trace,
+      type_pave,
+      type_trace,
+      score_pave,
+      trace_cor,
+      pave_cn,
+      trace_cn,
+      cn_match,
+      cn_assignment,
+      mz_pave,
+      rt_pave,
+      mz_trace,
+      rt_trace,
+      seed_trace
+    ) %>%
+    dplyr::arrange(feature_id)
+
+
+  ggplot(pave.trace.merged,aes(x = type_trace,y = type_pave))+
+    geom_count()+
+    scale_size(range = c(1,20),
+               transform = "sqrt")+
+    stat_sum(
+      aes(label = after_stat(n)),
+      geom = "text",
+      color = "white",
+      size = 3.5,
+      show.legend = FALSE
+    )
+
+
+}
+
 

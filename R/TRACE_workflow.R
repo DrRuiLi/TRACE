@@ -1096,3 +1096,433 @@ TRACE_export <- function(object, file = NULL) {
   )
   invisible(file)
 }
+
+#' Plot TRACE CN labeling fraction per metabolite and sample
+#'
+#' For each TRACE metabolite seed, counts all CN-labeled features in the seed
+#' network (C0N0, C0Ny, CxN0, CxNy, and other matched CxNy patterns) and
+#' calculates the labeling fraction in each sample:
+#' \itemize{
+#'   \item `S12C14N`: C0N0 / total
+#'   \item `S12C15N`: C0Ny / total
+#'   \item `S13C14N`: CxN0 / total
+#'   \item `S13C15N`: CxNy / total
+#' }
+#'
+#' @param object MSdev object with TRACE results in `object@advancedAna$TRACE`
+#'   and CN hits in `object@advancedAna$TRACE_temp`.
+#' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#' @param TRACE_cor_cutoff Minimum `TRACE_cor` used to select CN seeds when
+#'   TRACE metabolite annotations are unavailable.
+#' @param return.data Logical. If `TRUE`, return a list with `plot` and `data`.
+#'
+#' @returns A patchwork object combining the box/point plot and density plot,
+#'   or a list with `plot`, `p1`, `p2`, and `data` when `return.data = TRUE`.
+#' @export
+plot_TRACE_labeling_fraction <- function(
+    object,
+    i.pol = 0,
+    TRACE_cor_cutoff = 0.7,
+    return.data = FALSE) {
+  sample.types <- c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
+  pol <- .trace_get_pol(i.pol)
+
+  cn.hit <- object@advancedAna$TRACE_temp[[pol]]$cn.net.hit
+  trace.res <- object@advancedAna$TRACE[[pol]]
+  xcms.xcms <- object@xcmsData[[paste0(pol, "MS1")]]
+
+  if (is.null(cn.hit) || !nrow(cn.hit) || is.null(xcms.xcms)) {
+    stop("TRACE CN hits or xcms data not found for polarity ", pol, ".")
+  }
+
+  cn.hit <- data.table::as.data.table(cn.hit)
+  xcms.val <- xcms::featureValues(xcms.xcms, missing = 0, value = "maxo")
+  xcms.pda <- Biobase::pData(xcms.xcms)
+  xcms.trace.sample <- xcms.pda %>%
+    dplyr::filter(sample.type %in% sample.types)
+
+  if (!nrow(xcms.trace.sample)) {
+    stop("No TRACE sample groups found in xcms sample metadata.")
+  }
+
+  seed.df <- NULL
+  if (!is.null(trace.res) && nrow(trace.res)) {
+    seed.df <- trace.res %>%
+      dplyr::filter(type == "metabolite") %>%
+      dplyr::transmute(
+        seed = as.character(seed),
+        metabolite = dplyr::coalesce(as.character(name), as.character(compound_id), seed)
+      ) %>%
+      dplyr::distinct(seed, .keep_all = TRUE)
+  }
+
+  if (is.null(seed.df) || !nrow(seed.df)) {
+    cn.seed <- cn.hit[, .SD[1], by = from]
+    cn.seed <- cn.seed[TRACE_cor >= TRACE_cor_cutoff]
+    seed.df <- cn.seed %>%
+      dplyr::transmute(
+        seed = as.character(from),
+        metabolite = paste0(TRACE_formula, "_", from)
+      )
+  }
+
+  .feature_intensity <- function(fid, sample.name) {
+    if (is.na(fid)) {
+      return(NA_real_)
+    }
+    fid <- suppressWarnings(as.numeric(fid))
+    if (!is.finite(fid) || fid < 1 || fid > nrow(xcms.val)) {
+      return(NA_real_)
+    }
+    x <- xcms.val[fid, sample.name, drop = TRUE]
+    x <- x[is.finite(x)]
+    if (!length(x)) {
+      return(NA_real_)
+    }
+    mean(x)
+  }
+
+  frac.list <- lapply(seq_len(nrow(seed.df)), function(i.seed) {
+    this.seed <- seed.df$seed[i.seed]
+    this.met <- seed.df$metabolite[i.seed]
+    this.hit <- cn.hit[as.character(from) == this.seed]
+    if (!nrow(this.hit)) {
+      return(NULL)
+    }
+
+    this.formula <- as.character(this.hit$TRACE_formula[1])
+    this.cn <- regmatches(this.formula, regexec("^C([0-9]+)N([0-9]+)$", this.formula))[[1]]
+    this.c <- if (length(this.cn) == 3) as.numeric(this.cn[2]) else NA_real_
+    this.n <- if (length(this.cn) == 3) as.numeric(this.cn[3]) else NA_real_
+
+    fid.c0n0 <- this.seed
+    fid.c0ny <- this.hit[C_count == 0 & N_count == this.n, to][1]
+    fid.cxn0 <- this.hit[C_count == this.c & N_count == 0, to][1]
+    fid.cxny <- this.hit[C_count == this.c & N_count == this.n, to][1]
+
+    if (is.finite(this.n) && this.n == 0) {
+      fid.c0ny <- fid.c0n0
+      fid.cxny <- fid.cxn0
+    }
+
+    all.fids <- unique(c(fid.c0n0, this.hit$to))
+    all.fids <- all.fids[!is.na(all.fids)]
+
+    lapply(seq_len(nrow(xcms.trace.sample)), function(i.sample) {
+      sample.name <- xcms.trace.sample$sampleNames[i.sample]
+      sample.type <- xcms.trace.sample$sample.type[i.sample]
+
+      total <- sum(vapply(all.fids, .feature_intensity, numeric(1), sample.name = sample.name), na.rm = TRUE)
+      if (!is.finite(total) || total <= 0) {
+        return(NULL)
+      }
+
+      fid.num <- switch(
+        as.character(sample.type),
+        S12C14N = fid.c0n0,
+        S12C15N = fid.c0ny,
+        S13C14N = fid.cxn0,
+        S13C15N = fid.cxny,
+        NA
+      )
+      numerator <- .feature_intensity(fid.num, sample.name)
+      if (!is.finite(numerator)) {
+        return(NULL)
+      }
+
+      data.frame(
+        metabolite = this.met,
+        seed = this.seed,
+        TRACE_formula = this.formula,
+        sample = sample.name,
+        sample.type = sample.type,
+        labeling_fraction = numerator / total,
+        total_intensity = total,
+        numerator_intensity = numerator,
+        n_cn_features = length(all.fids),
+        row.names = NULL
+      )
+    })
+  })
+
+  plot.df <- data.table::rbindlist(
+    unlist(frac.list, recursive = FALSE),
+    fill = TRUE
+  ) %>%
+    as.data.frame()
+
+  if (!nrow(plot.df)) {
+    stop("No labeling-fraction values could be calculated.")
+  }
+
+  sample.labels <- c(
+    S12C14N = "S12C14N\nC0N0/total",
+    S12C15N = "S12C15N\nC0Ny/total",
+    S13C14N = "S13C14N\nCxN0/total",
+    S13C15N = "S13C15N\nCxNy/total"
+  )
+  cn.pattern.colors <- stats::setNames(
+    c("#C9352D", "#FF7F0E", "#1F77B4", "#9467BD", "#CCCCCC"),
+    c("C0N0", "CxN0", "C0Ny", "CxNy", "noise")
+  )
+  sample.pattern <- c(
+    S12C14N = "C0N0",
+    S13C14N = "CxN0",
+    S12C15N = "C0Ny",
+    S13C15N = "CxNy"
+  )
+  sample.colors <- cn.pattern.colors[sample.pattern]
+  names(sample.colors) <- names(sample.pattern)
+
+  plot.df$sample.type <- factor(plot.df$sample.type, levels = sample.types)
+  plot.df$sample.label <- sample.labels[as.character(plot.df$sample.type)]
+  plot.df$sample.label <- factor(plot.df$sample.label, levels = sample.labels)
+
+  p1 <- ggplot2::ggplot(
+    plot.df,
+    ggplot2::aes(
+      x = sample.label,
+      y = labeling_fraction,
+      color = sample.type,
+      fill = sample.type
+    )
+  ) +
+    ggplot2::geom_boxplot(
+      outlier.shape = NA,
+      alpha = 0.55
+    ) +
+    #ggplot2::geom_point(
+    #  position = ggplot2::position_jitter(width = 0.12, height = 0),
+    #  alpha = 0.55,
+    #  size = 1.2
+    #) +
+    ggplot2::scale_color_manual(
+      values = sample.colors,
+      labels = sample.pattern,
+      name = "CN pattern"
+    ) +
+    ggplot2::scale_fill_manual(
+      values = sample.colors,
+      labels = sample.pattern,
+      name = "CN pattern"
+    ) +
+    ggplot2::labs(
+      x = "Sample group (numerator/total)",
+      y = "Labeling fraction",
+      title = "Labeling fraction by metabolite"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(
+     # axis.text.x = ggplot2::element_text(size = 9),
+      legend.position = "none"
+    )
+
+  p2 <- ggplot2::ggplot(
+    plot.df,
+    ggplot2::aes(
+      x = labeling_fraction,
+      color = sample.type,
+      fill = sample.type
+    )
+  ) +
+    ggplot2::geom_density(alpha = 0.25) +
+    ggplot2::scale_color_manual(
+      values = sample.colors,
+      labels = sample.pattern,
+      name = "CN pattern"
+    ) +
+    ggplot2::scale_fill_manual(
+      values = sample.colors,
+      labels = sample.pattern,
+      name = "CN pattern"
+    ) +
+    ggplot2::labs(
+      x = "Labeling fraction",
+      y = "Density",
+      title = "Labeling fraction distribution"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = c(0.1,0.7),
+                   legend.key.size  = unit(0.1,"inch"))
+
+  p <- p1 / p2 +
+    patchwork::plot_layout(widths = c(1.2, 1)) +
+    patchwork::plot_annotation(tag_levels = "A",
+      #title = paste0("TRACE labeling fraction (", pol, ")")
+    )
+
+  if (return.data) {
+    return(list(plot = p, p1 = p1, p2 = p2, data = plot.df))
+  }
+  p
+}
+
+#' Plot feature RSD distribution by sample group
+#'
+#' For each sample group (`group` in xcms sample metadata, also referred to as
+#' `sample.group` in MSdev sample sheets), computes the relative standard
+#' deviation (RSD = SD / mean) of feature intensities across biological
+#' replicates within that group, then plots the RSD distribution across features.
+#'
+#' @param object MSdev object with processed xcms data in `object@xcmsData`.
+#' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#' @param sample.groups Character vector of sample groups to include. Default
+#'   uses all `group` levels with at least `min.replicates` samples, optionally
+#'   excluding `Blank` and `QC`.
+#' @param exclude.blank Logical. If `TRUE`, exclude `Blank` and `QC` groups when
+#'   `sample.groups` is `NULL`.
+#' @param min.replicates Minimum number of samples required in a group to
+#'   calculate RSD.
+#' @param binwidth Histogram bin width for the RSD histogram.
+#' @param rsd.max Upper x-axis limit for RSD plots.
+#' @param return.data Logical. If `TRUE`, return a list with `plot` and `data`.
+#'
+#' @returns A patchwork object combining the histogram and ECDF plots, or a
+#'   list with `plot`, `p1`, `p2`, and `data` when `return.data = TRUE`.
+#' @export
+plot_TRACE_RSD <- function(
+    object,
+    i.pol = 0,
+    sample.groups = NULL,
+    exclude.blank = TRUE,
+    min.replicates = 2,
+    binwidth = 0.05,
+    rsd.max = 1,
+    return.data = FALSE) {
+  pol <- .trace_get_pol(i.pol)
+  xcms.xcms <- object@xcmsData[[paste0(pol, "MS1")]]
+
+  if (is.null(xcms.xcms)) {
+    stop("xcms data not found for polarity ", pol, ".")
+  }
+
+  xcms.val <- xcms::featureValues(xcms.xcms, missing = 0, value = "maxo")
+  pda <- Biobase::pData(xcms.xcms)
+
+  if (is.null(pda$group)) {
+    stop("Sample metadata column 'group' (sample.group) not found in xcms pData.")
+  }
+
+  if (is.null(sample.groups)) {
+    sample.groups <- unique(as.character(pda$group))
+    sample.groups <- sample.groups[nzchar(sample.groups)]
+    if (exclude.blank) {
+      sample.groups <- sample.groups[!sample.groups %in% c("Blank", "QC")]
+    }
+  }
+
+  .feature_rsd <- function(x) {
+    x <- x[is.finite(x) & x > 0]
+    if (length(x) < min.replicates) {
+      return(NA_real_)
+    }
+    stats::sd(x) / mean(x)
+  }
+
+  rsd.list <- lapply(sample.groups, function(this.group) {
+    samps <- rownames(pda)[as.character(pda$group) == this.group]
+    if (length(samps) < min.replicates) {
+      return(NULL)
+    }
+
+    rsd <- apply(xcms.val[, samps, drop = FALSE], 1, .feature_rsd)
+    data.frame(
+      feature_id = seq_along(rsd),
+      sample.group = this.group,
+      rsd = rsd,
+      n_replicates = length(samps),
+      row.names = NULL
+    )
+  })
+
+  plot.df <- as.data.frame(data.table::rbindlist(rsd.list, fill = TRUE))
+  plot.df <- plot.df[is.finite(plot.df$rsd), , drop = FALSE]
+
+  if (!nrow(plot.df)) {
+    stop("No RSD values could be calculated for the selected sample groups.")
+  }
+
+  trace.types <- c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
+  group.levels <- unique(c(
+    intersect(trace.types, sample.groups),
+    setdiff(unique(plot.df$sample.group), trace.types)
+  ))
+  plot.df$sample.group <- factor(plot.df$sample.group, levels = group.levels)
+
+  cn.pattern.colors <- stats::setNames(
+    c("#C9352D", "#FF7F0E", "#1F77B4", "#9467BD", "#CCCCCC"),
+    c("C0N0", "CxN0", "C0Ny", "CxNy", "noise")
+  )
+  sample.pattern <- c(
+    S12C14N = "C0N0",
+    S12C15N = "C0Ny",
+    S13C14N = "CxN0",
+    S13C15N = "CxNy",
+    Blank = "noise",
+    QC = "noise"
+  )
+  group.colors <- cn.pattern.colors[sample.pattern[as.character(group.levels)]]
+  names(group.colors) <- as.character(group.levels)
+  missing.groups <- is.na(group.colors)
+  if (any(missing.groups)) {
+    extra.colors <- grDevices::colorRampPalette(c("#4DAF4A", "#984EA3", "#A65628"))(sum(missing.groups))
+    group.colors[missing.groups] <- extra.colors
+    names(group.colors) <- as.character(group.levels)
+  }
+
+  p1 <- ggplot2::ggplot(
+    plot.df,
+    ggplot2::aes(
+      x = rsd,
+      fill = sample.group
+    )
+  ) +
+    ggplot2::geom_histogram(
+      ggplot2::aes(y = ggplot2::after_stat(count)),
+      position = ggplot2::position_dodge(width = binwidth),
+      binwidth = binwidth,
+      color = "black",
+      alpha = 0.75
+    ) +
+    ggplot2::scale_fill_manual(values = group.colors, name = "Sample group") +
+    ggplot2::scale_x_continuous(limits = c(0, rsd.max), expand = c(0, 0)) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.05))) +
+    ggplot2::labs(
+      x = "RSD",
+      y = "Feature count",
+      title = "Feature RSD distribution by sample group"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = "none")
+
+  p2 <- ggplot2::ggplot(
+    plot.df,
+    ggplot2::aes(
+      x = rsd,
+      color = sample.group
+    )
+  ) +
+    ggplot2::stat_ecdf(linewidth = 0.6) +
+    ggplot2::scale_color_manual(values = group.colors, name = "Sample group") +
+    ggplot2::scale_x_continuous(limits = c(0, rsd.max), expand = c(0, 0)) +
+    ggplot2::labs(
+      x = "RSD",
+      y = "Cumulative probability",
+      title = "Feature RSD cumulative distribution"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = c(0.15, 0.7),
+                   legend.key.size = grid::unit(0.1, "inch"))
+
+  p <- p1 / p2 +
+    patchwork::plot_layout(widths = c(1.2, 1)) +
+    patchwork::plot_annotation(
+      tag_levels = "A",
+      title = paste0("TRACE feature RSD (", pol, ")")
+    )
+
+  if (return.data) {
+    return(list(plot = p, p1 = p1, p2 = p2, data = plot.df))
+  }
+  p
+}
