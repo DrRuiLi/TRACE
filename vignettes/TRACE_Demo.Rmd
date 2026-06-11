@@ -80,7 +80,7 @@ trace.demo
 
 ## 2. TRACE Core
 
-### 2.1 find CN labelling
+### 2.1 find CN labeling
 
 ```{r}
 trace.demo <- TRACE_get_CN_net(trace.demo,0,ratio.adjust = c(1.0842,0.7641,1.0566,1.0707))
@@ -97,33 +97,167 @@ trace.demo <- TRACE_CN_labelling_ratio_adjust(trace.demo,eval_top = 0.3,plot = T
 
 ```
 
-
-
 ## 3. TRACE paramers sensitivity
-TRACE utilize xcms to extract peaks and group peaks, so the parameters of xcms will affect the TRACE result.
-`xcms::CentWaveParam()' was usually used for peak detection
-``` {r}
+
+TRACE utilize xcms to extract peaks and group peaks, so the parameters of xcms will affect the TRACE result. \`xcms::CentWaveParam()' was usually used for peak detection
+
+```{r}
 xcms::CentWaveParam()
 ```
 
+### 3.1 set parameters grid and run TRACE
+
 we set parameters grid as follows:
 
-``` {r}
+```{r}
 param.list <- list(
   cw1 = xcms::CentWaveParam(ppm = 5, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 10),
   cw2 = xcms::CentWaveParam(ppm = 5, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 100),
   cw3 = xcms::CentWaveParam(ppm = 10, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 10),
   cw4 = xcms::CentWaveParam(ppm = 20, prefilter = c(3,1000), peakwidth = c(10,30), snthresh = 10),
   cw5 = xcms::CentWaveParam(ppm = 5, prefilter = c(5,1000), peakwidth = c(10,30), snthresh = 10))
-)
+
 
 for(i in 1:length(param.list)){
-  trace.demo <- MSdev_set_param(trace.demo, findChromPeaks = param.list[[i]])
+  trace.demo <- MSdev_set_param(trace.demo, findChromPeaks = param.list[[i]],
+                                groupChromPeaks = xcms::PeakDensityParam(
+                                  sampleGroups = "A",
+                                  minFraction = 0.6,
+                                  binSize = 0.002,
+                                  bw = 5,
+                                  ppm = param.list[[i]]@ppm ))
   trace.demo <- MSdev_xcmsProcessing(trace.demo)
-  trace.demo <- TRACE_workflow(trace.demo)
+  #trace.demo <- TRACE_workflow(trace.demo)
   save.name <- paste0("TRACE_xcms_sensitivity_ppm_",param.list[[i]]@ppm,"_sn_",param.list[[i]]@snthresh,"_prefilter_",param.list[[i]]@prefilter[1],"_",param.list[[i]]@prefilter[2],".Rdata")
   save.file <- paste0("d:/data/2025.12.26.PAVE2/xcms_sensitivity/",save.name)
   MSdev_save(trace.demo,save.file)
 }
-``` 
 
+for(i in 1:length(param.list)){
+  message_with_time()
+  save.name <- paste0("TRACE_xcms_sensitivity_ppm_",param.list[[i]]@ppm,"_sn_",param.list[[i]]@snthresh,"_prefilter_",param.list[[i]]@prefilter[1],"_",param.list[[i]]@prefilter[2],".Rdata")
+  save.file <- paste0("d:/data/2025.12.26.PAVE2/xcms_sensitivity/",save.name)
+  obj <- MSdev_load(save.file)
+  obj@advancedAna <- list()
+  obj <- TRACE_workflow(obj,ratio.reconstruct = F)
+  MSdev_save(obj,save.file)
+}
+```
+
+### 3.2 result
+
+Plot the result under parameters grid:
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(MSdev)
+
+sens.dir <- "d:/data/2025.12.26.PAVE2/xcms_sensitivity/"
+save.names <- vapply(param.list, function(p) {
+  paste0(
+    "TRACE_xcms_sensitivity_ppm_", p@ppm,
+    "_sn_", p@snthresh,
+    "_prefilter_", p@prefilter[1], "_", p@prefilter[2],
+    ".Rdata"
+  )
+}, character(1))
+param.labels <- c("benchmark", "sn=100", "ppm=10", "ppm=20", "prefilter=5")
+
+trace.all <- lapply(seq_along(param.list), function(i) {
+  obj <- MSdev_load(file.path(sens.dir, save.names[i]))
+  trace.neg <- obj@advancedAna$TRACE$Negative
+  trace.pos <- obj@advancedAna$TRACE$Positive
+  dplyr::bind_rows(
+    if (!is.null(trace.neg) && nrow(trace.neg)) {
+      trace.neg %>% dplyr::mutate(polarity = "Negative")
+    },
+    if (!is.null(trace.pos) && nrow(trace.pos)) {
+      trace.pos %>% dplyr::mutate(polarity = "Positive")
+    }
+  ) %>%
+    dplyr::mutate(
+      param = names(param.list)[i],
+      param.label = param.labels[i]
+    )
+})
+trace.all <- dplyr::bind_rows(trace.all)
+
+type.levels <- c("metabolite", "adduct", "fragment", "isotope", "unknown")
+type.comp <- trace.all %>%
+  dplyr::mutate(
+    type = dplyr::case_when(
+      is.na(type) | type == "" ~ "unknown",
+      TRUE ~ as.character(type)
+    ),
+    type = factor(type, levels = type.levels),
+    param = factor(param, levels = names(param.list)),
+    param.label = factor(param.label, levels = param.labels)
+  ) %>%
+  dplyr::count(param, param.label, type, name = "n") %>%
+  dplyr::ungroup()
+
+p.comp <- ggplot2::ggplot(type.comp, ggplot2::aes(x = param.label, y = n, fill = type)) +
+  ggplot2::geom_col(position = "stack", width = 0.7) +
+  ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.05))) +
+  ggplot2::scale_fill_brewer(palette = "Set2") +
+  ggplot2::labs(
+    x = NULL,
+    y = "Number of features",
+    fill = "Annotation type",
+    title = "TRACE annotation composition across xcms parameter grid"
+  ) +
+  ggplot2::theme_bw(base_size = 6) +
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(size = 4),
+    legend.position = "right"
+  )
+
+print(p.comp)
+
+compound.sets <- lapply(seq_along(param.list), function(i) {
+  trace.all %>%
+    dplyr::filter(param == names(param.list)[i]) %>%
+    dplyr::filter(type == "metabolite", !is.na(compound_id)) %>%
+    dplyr::pull(compound_id) %>%
+    unique()
+})
+names(compound.sets) <- param.labels
+
+if (requireNamespace("UpSetR", quietly = TRUE)) {
+  compound.mat <- UpSetR::fromList(compound.sets)
+  p2 <- UpSetR::upset(
+    compound.mat,
+    nsets = length(compound.sets),
+    order.by = "freq",
+    decreasing = TRUE,
+    mainbar.y.label = "Compound intersection size",
+    sets.x.label = "Compounds per parameter set",
+    text.scale = c(1.3, 1.1, 1, 1, 1.2, 1),
+    main.bar.color = "#66C2A5",
+    sets.bar.color = "#FC8D62"
+  )
+} else {
+  message(
+    "Install UpSetR to draw the compound_id UpSet plot: ",
+    "install.packages('UpSetR')"
+  )
+}
+```
+
+## 4. TRACE evaluation
+
+### 4.1 RSD
+
+show the RSD of features in the 4 groups of samples: S12C14N, S12C15N, S13C14N, S13C15N
+
+```{r}
+
+plot_TRACE_RSD(
+  trace.demo, 
+  i.pol = 1 )
+
+
+```
+
+### 
