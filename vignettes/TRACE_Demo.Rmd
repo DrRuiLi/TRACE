@@ -105,7 +105,9 @@ TRACE utilize xcms to extract peaks and group peaks, so the parameters of xcms w
 xcms::CentWaveParam()
 ```
 
-### 3.1 set parameters grid and run TRACE
+### 3.1 xcms parameters sensitivity
+
+#### 3.1.1 set parameters grid and run TRACE
 
 we set parameters grid as follows:
 
@@ -144,7 +146,7 @@ for(i in 1:length(param.list)){
 }
 ```
 
-### 3.2 result
+#### 3.1.2 result
 
 Plot the result under parameters grid:
 
@@ -240,6 +242,132 @@ if (requireNamespace("UpSetR", quietly = TRUE)) {
 } else {
   message(
     "Install UpSetR to draw the compound_id UpSet plot: ",
+    "install.packages('UpSetR')"
+  )
+}
+```
+
+### 3.2 PAVE cor sensitivity
+
+`TRACE_get_CN_net()` uses `TRACE_cor_cutoff` to filter CN hits with correlation score below the cutoff.
+
+#### 3.2.1 set parameters grid and run TRACE
+
+We test a grid of `TRACE_cor_cutoff` values on the same xcms-processed data set:
+
+```{r}
+cor.list <- seq(0.5,0.95,0.05)
+cor.labels <- paste0("cor=", cor.list)
+ratio.adj <- c(1.0842, 0.7641, 1.0566, 1.0707)
+base.file <- "d:/data/PAVE_demo/MSdev_2026_06_01.Rdata"
+sens.dir <- "d:/data/2025.12.26.PAVE2/cor_sensitivity/"
+dir.create(sens.dir, recursive = TRUE, showWarnings = FALSE)
+
+for (i in seq_along(cor.list)) {
+  message_with_time()
+  obj <- MSdev_load(base.file)
+  obj@advancedAna <- list()
+  cor.cut <- cor.list[i]
+  for (i.pol in 0:1) {
+    obj <- TRACE_get_CN_net(
+      obj,
+      i.pol = i.pol,
+      ratio.adjust = ratio.adj,
+      TRACE_cor_cutoff = cor.cut
+    )
+  }
+  save.name <- paste0("TRACE_cor_sensitivity_cutoff_", cor.cut, ".Rdata")
+  save.file <- file.path(sens.dir, save.name)
+  MSdev_save(obj, save.file)
+}
+```
+
+#### 3.2.2 result
+
+Plot the result under `TRACE_cor_cutoff` grid:
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(MSdev)
+
+save.names <- paste0("TRACE_cor_sensitivity_cutoff_", cor.list, ".Rdata")
+
+cn.hit.all <- lapply(seq_along(cor.list), function(i) {
+  obj <- MSdev_load(file.path(sens.dir, save.names[i]))
+  cn.neg <- obj@advancedAna$TRACE_temp$Negative$cn.net.hit
+  cn.pos <- obj@advancedAna$TRACE_temp$Positive$cn.net.hit
+  dplyr::bind_rows(
+    if (!is.null(cn.neg) && nrow(cn.neg)) {
+      cn.neg %>% dplyr::mutate(polarity = "Negative")
+    },
+    if (!is.null(cn.pos) && nrow(cn.pos)) {
+      cn.pos %>% dplyr::mutate(polarity = "Positive")
+    }
+  ) %>%
+    dplyr::mutate(
+      cor.cut = cor.list[i],
+      param.label = cor.labels[i]
+    )
+})
+cn.hit.all <- dplyr::bind_rows(cn.hit.all)
+
+cn.seed <- cn.hit.all %>%
+  dplyr::group_by(cor.cut, param.label, from) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup()
+
+formula.comp <- cn.seed %>%
+  dplyr::mutate(
+    TRACE_formula = dplyr::coalesce(as.character(TRACE_formula), "unknown"),
+    cor.cut = factor(cor.cut, levels = cor.list),
+    param.label = factor(param.label, levels = cor.labels)
+  ) %>%
+  dplyr::count(cor.cut, param.label, TRACE_formula, name = "n") %>%
+  dplyr::ungroup()
+
+p.comp <- ggplot2::ggplot(formula.comp, ggplot2::aes(x = param.label, y = n, fill = TRACE_formula)) +
+  ggplot2::geom_col(position = "stack", width = 0.7) +
+  ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.05))) +
+  ggplot2::scale_fill_brewer(palette = "Set2") +
+  ggplot2::labs(
+    x = NULL,
+    y = "Number of CN seeds",
+    fill = "CN formula",
+    title = "CN seed composition across TRACE_cor_cutoff grid"
+  ) +
+  ggplot2::theme_bw(base_size = 6) +
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(size = 4, angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+print(p.comp)
+
+seed.sets <- lapply(seq_along(cor.list), function(i) {
+  cn.seed %>%
+    dplyr::filter(cor.cut == cor.list[i]) %>%
+    dplyr::pull(from) %>%
+    unique()
+})
+names(seed.sets) <- cor.labels
+
+if (requireNamespace("UpSetR", quietly = TRUE)) {
+  seed.mat <- UpSetR::fromList(seed.sets)
+  UpSetR::upset(
+    seed.mat,
+    nsets = length(seed.sets),
+    order.by = "freq",
+    decreasing = TRUE,
+    mainbar.y.label = "CN seed intersection size",
+    sets.x.label = "CN seeds per TRACE_cor_cutoff",
+    text.scale = c(1.3, 1.1, 1, 1, 1.2, 1),
+    main.bar.color = "#66C2A5",
+    sets.bar.color = "#FC8D62"
+  )
+} else {
+  message(
+    "Install UpSetR to draw the CN seed UpSet plot: ",
     "install.packages('UpSetR')"
   )
 }
