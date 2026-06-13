@@ -1,8 +1,8 @@
 ---
-title: "TRACE_Nutrient_Analysis"
+title: "TRACE Nutrient Analysis"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{TRACE_Nutrient_Analysis}
+  %\VignetteIndexEntry{TRACE Nutrient Analysis}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -10,10 +10,916 @@ vignette: >
 ```{r, include = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
-  comment = "#>"
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
 )
 ```
 
+## Overview
+
+This vignette compares **absorb-form preference** across eight nutrient-supplement
+conditions. For each TRACE metabolite (e.g. `C10N5`), all CN labeling forms
+(`C0N0`, `C7N3`, …) are matched by **m/z and RT**, and each labeling form is
+converted to its **absorb form** — the unlabeled C/N atoms incorporated from
+nutrients:
+
+$$\text{absorb form } C_{x'}N_{y'} = C_{(C_{\max} - x)}N_{(N_{\max} - y)}$$
+
+For example, metabolite `C10N5` with labeling form `C7N3` has absorb form
+`C3N2` (3 carbons and 2 nitrogens absorbed from unlabeled sources).
+
+The workflow follows the nutrient experiment analysis in `test/test.R` and
+extends it from aggregate C/N absorption fractions to **per–labeling-form absorb
+pattern** distributions across nutrient conditions.
+
 ```{r setup}
 library(TRACE)
+library(MSdev)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(data.table)
+library(tibble)
+library(SummarizedExperiment)
+```
+
+## 1. Load data
+
+```{r load-data}
+nutrient.file <- "d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata"
+
+if (!file.exists(nutrient.file)) {
+  stop(
+    "Nutrition MSdev object not found at:\n  ", nutrient.file, "\n",
+    "Update `nutrient.file` to your local path."
+  )
+}
+
+obj <- MSdev_load(nutrient.file)
+
+nutrient.groups <- c("NSA", "NSB", "NSC", "NSD", "NSE", "NSF", "NSG", "NSH")
+nutrient.labels <- c(
+  NSA = "Control",
+  NSB = "+mixture",
+  NSC = "+leucine",
+  NSD = "+threonine",
+  NSE = "+tryptophan",
+  NSF = "+adenine",
+  NSG = "+uracil",
+  NSH = "+acetate"
+)
+nutrient.colors <- c(
+  "#E64B35", "#4DBBD5", "#00A087", "#3C5488",
+  "#F39B7F", "#8491B4", "#91D1C2", "#7E6148"
+)
+names(nutrient.colors) <- nutrient.groups
+```
+
+## 2. Helper functions
+
+### Match m/z / RT and extract all labeling forms
+
+```{r helpers-extract}
+extract_cn_labeling_forms <- function(
+    pave_formula,
+    seed_mz,
+    seed_rt,
+    xcms_fdf,
+    xcms_mat,
+    xcms_se,
+    ppm = 3,
+    rt_tol = 5) {
+  cn_count <- MSCC::chemform_parse(pave_formula)
+  c_max <- cn_count[1, "C"]
+  n_max <- cn_count[1, "N"]
+
+  cn_diff <- TRACE:::get_CN_mass_diff_table(c_max, n_max)
+  cn_diff[, mz := mass_diff + seed_mz]
+
+  cn_match <- MSdev::match_mz_foverlaps(
+    cn_diff$mz,
+    xcms_fdf$mzmed,
+    ppm = ppm
+  )
+  cn_match[, fid := ion2][, rt := xcms_fdf$rtmed[fid]]
+
+  cn_table <- cbind(cn_match, cn_diff[cn_match$ion1])
+  cn_table[, label_pattern := paste0("C", C_count, "N", N_count)][!is.na(fid)]
+
+  cn_table <- cn_table[abs(rt - seed_rt) < rt_tol]
+  cn_table <- cn_table %>%
+    dplyr::group_by(label_pattern) %>%
+    dplyr::slice_min(mz.ppm, n = 1, with_ties = FALSE) %>%
+    dplyr::ungroup() %>%
+    dplyr::arrange(N_count, C_count)
+
+  if (nrow(cn_table) <= 1) {
+    return(NULL)
+  }
+
+  exp_mat <- xcms_mat[cn_table$fid, xcms_se$sample.name, drop = FALSE]
+  rownames(exp_mat) <- cn_table$label_pattern
+
+  list(
+    cn_table = as.data.frame(cn_table),
+    exp_mat = exp_mat,
+    c_max = c_max,
+    n_max = n_max
+  )
+}
+```
+
+### Calculate absorb form fractions per sample
+
+For each labeling form `CxNy`, the absorb form is `C(Cmax − x)N(Nmax − y)`.
+Intensities are normalized to the control group (`NSA`) and converted to
+fractions within each sample.
+
+```{r helpers-absorb}
+compute_absorb_forms <- function(
+    cn_result,
+    xcms_se,
+    norm_group = "NSA",
+    norm_replicates = 10) {
+  cn_table <- cn_result$cn_table
+  exp_mat <- cn_result$exp_mat
+  c_max <- cn_result$c_max
+  n_max <- cn_result$n_max
+
+  norm_samples <- xcms_se$sample.name[xcms_se$group == norm_group]
+  norm_to <- sum(exp_mat[, norm_samples, drop = FALSE], na.rm = TRUE) / norm_replicates
+  if (!is.finite(norm_to) || norm_to <= 0) {
+    norm_to <- mean(exp_mat, na.rm = TRUE)
+  }
+  exp_mat <- exp_mat / norm_to
+
+  cn_table$c_absorb <- c_max - cn_table$C_count
+  cn_table$n_absorb <- n_max - cn_table$N_count
+  cn_table$absorb_pattern <- paste0("C", cn_table$c_absorb, "N", cn_table$n_absorb)
+
+  exp_mat %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("label_pattern") %>%
+    pivot_longer(-label_pattern, names_to = "sample", values_to = "intensity") %>%
+    left_join(cn_table, by = "label_pattern") %>%
+    group_by(sample) %>%
+    mutate(
+      group = unname(setNames(xcms_se$sample.type, xcms_se$sample.name)[sample]),
+      int_total = sum(intensity, na.rm = TRUE),
+      absorb_fraction = ifelse(int_total > 0, intensity / int_total, NA_real_)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      c_max = c_max,
+      n_max = n_max
+    )
+}
+```
+
+Fully labeled metabolites have absorb form `C0N0` (no unlabeled C/N incorporated).
+Exclude this pattern when visualizing absorb-form preference and renormalize
+remaining fractions to sum to 1 within each metabolite sample.
+
+```{r helpers-filter}
+drop_absorb_c0n0 <- function(df, renormalize = TRUE) {
+  df <- df %>%
+    dplyr::filter(absorb_pattern != "C0N0")
+
+  if (!renormalize || !nrow(df)) {
+    return(df)
+  }
+
+  renorm_keys <- intersect(c("feature_id", "polarity", "sample"), names(df))
+  if (!length(renorm_keys)) {
+    renorm_keys <- intersect(c("feature_id", "polarity", "group"), names(df))
+  }
+
+  df %>%
+    group_by(across(all_of(renorm_keys))) %>%
+    mutate(
+      absorb_fraction = absorb_fraction / sum(absorb_fraction, na.rm = TRUE)
+    ) %>%
+    ungroup()
+}
+```
+
+### Run absorb-form analysis for one polarity
+
+```{r helpers-run}
+run_absorb_form_analysis <- function(
+    obj,
+    i.pol = 1,
+    ppm = 3,
+    rt_tol = 5,
+    min_peak_maxo = 1e4,
+    nutrient_groups = nutrient.groups) {
+  pol <- if (i.pol == 0) "Negative" else "Positive"
+  xcms_obj <- obj@xcmsData[[paste0(pol, "MS1")]]
+  pave_seed <- obj@statData$TRACE[[pol]]
+  if (!is.data.frame(pave_seed)) {
+    pave_seed <- as.data.frame(pave_seed)
+  }
+  pave_seed <- pave_seed %>%
+    dplyr::filter(type == "metabolite")
+
+  xcms_se_raw <- MSdev::get_xcms_feature_se(xcms_obj, missing = 1)
+  xcms_se <- xcms_se_raw[, grepl("NS", xcms_se_raw$sample.type)]
+  xcms_se <- MSdev::se_adjuset_by_weight(xcms_se)
+
+  xcms_fdf <- as.data.frame(rowData(xcms_se))
+  xcms_fdf$peakMaxo <- rowMeans(
+    assay(xcms_se_raw[, xcms_se_raw$group == "S12C14N", drop = FALSE])
+  )
+  xcms_mat <- assay(xcms_se)
+
+  results <- vector("list", nrow(pave_seed))
+  pb <- MSdev:::get_progress_bar(nrow(pave_seed))
+
+  for (i in seq_len(nrow(pave_seed))) {
+    pb$tick()
+    i_fid <- as.numeric(pave_seed$feature_id[i])
+    if (!is.finite(i_fid) || i_fid < 1 || i_fid > nrow(xcms_fdf)) next
+
+    cn_result <- extract_cn_labeling_forms(
+      pave_formula = pave_seed$pave_formula[i],
+      seed_mz = xcms_fdf$mzmed[i_fid],
+      seed_rt = pave_seed$rt[i],
+      xcms_fdf = xcms_fdf,
+      xcms_mat = xcms_mat,
+      xcms_se = xcms_se,
+      ppm = ppm,
+      rt_tol = rt_tol
+    )
+    if (is.null(cn_result)) next
+
+    absorb_df <- compute_absorb_forms(cn_result, xcms_se)
+    absorb_df$feature_id <- pave_seed$feature_id[i]
+    absorb_df$compound_id <- if ("compound_id" %in% names(pave_seed)) {
+      pave_seed$compound_id[i]
+    } else {
+      NA_character_
+    }
+    absorb_df$fid <- paste0(tolower(substr(pol, 1, 3)), i_fid)
+    absorb_df$metabolite <- pave_seed$name[i]
+    absorb_df$kegg_id <- if ("kegg_id" %in% names(pave_seed)) pave_seed$kegg_id[i] else NA_character_
+    absorb_df$pave_formula <- pave_seed$pave_formula[i]
+    absorb_df$peak_maxo <- xcms_fdf$peakMaxo[i_fid]
+    absorb_df$polarity <- pol
+    results[[i]] <- absorb_df
+  }
+
+  bind_rows(results) %>%
+    filter(
+      group %in% nutrient_groups,
+      peak_maxo > min_peak_maxo,
+      is.finite(absorb_fraction)
+    )
+}
+```
+
+## 3. Extract absorb forms for all metabolites
+
+```{r run-analysis, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+absorb.pos <- run_absorb_form_analysis(obj, i.pol = 1)
+absorb.neg <- run_absorb_form_analysis(obj, i.pol = 0)
+absorb.all <- bind_rows(absorb.pos, absorb.neg)
+absorb.all.plot <- drop_absorb_c0n0(absorb.all)
+
+absorb.summary <- absorb.all.plot %>%
+  group_by(
+    feature_id, compound_id, metabolite, pave_formula, kegg_id, polarity,
+    group, absorb_pattern, c_absorb, n_absorb
+  ) %>%
+  summarize(
+    absorb_fraction = mean(absorb_fraction, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels)
+  )
+
+head(absorb.summary)
+```
+
+## 4. Plot absorb-form preference
+
+### 4.1 Example metabolite: ATP (`C10N5`)
+
+Labeling form `C7N3` → absorb form `C3N2`. The heatmap shows the relative
+abundance of each absorb pattern in the eight nutrient conditions (`C0N0`
+excluded — fully labeled, no nutrient absorption).
+
+```{r plot-example, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+example_pick <- absorb.summary %>%
+  filter(
+    (!is.na(metabolite) & grepl("NAD|C10N5", metabolite, ignore.case = TRUE))
+  ) %>%
+  distinct(feature_id, metabolite, pave_formula) %>%
+  dplyr::slice_head(n = 1)
+
+if (nrow(example_pick) == 0) {
+  example_pick <- absorb.summary %>%
+    group_by(feature_id, metabolite, pave_formula) %>%
+    summarize(n_absorb = n_distinct(absorb_pattern), .groups = "drop") %>%
+    filter(n_absorb >= 4) %>%
+    dplyr::slice_head(n = 1)
+}
+
+example_met <- absorb.summary %>%
+  filter(
+    feature_id == example_pick$feature_id[1],
+    pave_formula == example_pick$pave_formula[1]
+  )
+
+example_met <- example_met %>%
+  mutate(
+    absorb_pattern = factor(
+      absorb_pattern,
+      levels = unique(absorb_pattern[order(c_absorb, n_absorb)])
+    )
+  )
+
+ggplot(example_met, aes(x = nutrient, y = absorb_pattern, fill = absorb_fraction)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  scale_fill_gradient2(
+    low = "#FFFFFF",
+    mid = "#FFCD99",
+    high = "#D13B2E",
+    midpoint = max(example_met$absorb_fraction, na.rm = TRUE) / 2,
+    name = "Fraction"
+  ) +
+  labs(
+    title = paste0(example_met$metabolite[1], " (", example_met$pave_formula[1], ")"),
+    subtitle = "Absorb-form preference across nutrient conditions",
+    x = NULL,
+    y = "Absorb form"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = -35, hjust = 0),
+    panel.grid = element_blank()
+  )
+```
+
+### 4.2 Stacked bar: absorb-form composition per condition
+
+For the same metabolite, stacked bars show how the absorb-form profile shifts
+across nutrient supplements.
+
+```{r plot-stacked, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+if (exists("example_met") && nrow(example_met) > 0) {
+  ggplot(example_met, aes(x = nutrient, y = absorb_fraction, fill = absorb_pattern)) +
+    geom_col(color = "grey30", linewidth = 0.2) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+    labs(
+      title = paste0(example_met$metabolite[1], " absorb-form composition"),
+      x = NULL,
+      y = "Fraction of total CN signal",
+      fill = "Absorb form"
+    ) +
+    theme_bw(base_size = 10) +
+    theme(axis.text.x = element_text(angle = -35, hjust = 0))
+}
+```
+
+### 4.3 Global comparison: mean absorbed C and N across metabolites
+
+Two metrics are used below and should not be confused:
+
+1. **True absorption fraction** (as in `test/test.R`): weighted mean absorbed C
+   or N atoms per metabolite, including the fully labeled absorb form `C0N0`.
+   Higher values mean more unlabeled nutrient incorporation.
+2. **Absorb-form composition** (after dropping `C0N0`): relative abundance of
+   partially labeled absorb patterns only. The top-20 bar sums a fixed set of
+   globally abundant patterns; if a condition spreads signal across many other
+   patterns, its top-20 slice can look lower even when true absorption is higher.
+
+```{r plot-global, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+true.absorb <- absorb.all %>%
+  filter(group %in% nutrient.groups, c_max > 0) %>%
+  group_by(feature_id, polarity, sample, group) %>%
+  summarize(
+    c_absorb_frac = sum(c_absorb * absorb_fraction, na.rm = TRUE) / dplyr::first(c_max),
+    n_absorb_frac = if (dplyr::first(n_max) > 0) {
+      sum(n_absorb * absorb_fraction, na.rm = TRUE) / dplyr::first(n_max)
+    } else {
+      NA_real_
+    },
+    c0n0_frac = sum(absorb_fraction[absorb_pattern == "C0N0"], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels)
+  )
+
+p_true_c <- ggplot(true.absorb, aes(x = nutrient, y = c_absorb_frac, fill = group)) +
+  geom_boxplot(outlier.size = 0.4, linewidth = 0.3) +
+  scale_fill_manual(values = nutrient.colors, guide = "none") +
+  labs(
+    title = "True C absorption fraction (all absorb forms)",
+    subtitle = "Mixture (+mixture) typically exceeds control when supplements are used",
+    x = NULL,
+    y = "Absorption fraction of C"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = -35, hjust = 0))
+
+global.absorb <- absorb.all.plot %>%
+  filter(group %in% nutrient.groups) %>%
+  group_by(feature_id, compound_id, metabolite, pave_formula, kegg_id, sample, group) %>%
+  summarize(
+    c_absorb_mean = sum(c_absorb * absorb_fraction, na.rm = TRUE),
+    n_absorb_mean = sum(n_absorb * absorb_fraction, na.rm = TRUE),
+    int_total = dplyr::first(int_total),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels)
+  )
+
+p_scatter <- ggplot(global.absorb, aes(x = c_absorb_mean, y = n_absorb_mean, color = group, fill = group)) +
+  geom_point(size = 0.8, alpha = 0.35) +
+  stat_ellipse(geom = "polygon", alpha = 0.15, linewidth = 0.4) +
+  scale_color_manual(values = nutrient.colors, labels = nutrient.labels) +
+  scale_fill_manual(values = nutrient.colors, labels = nutrient.labels) +
+  labs(
+    title = "Absorb-form preference across metabolites",
+    subtitle = "Mean absorbed C and N counts (C0N0 excluded)",
+    x = "Mean absorbed C count",
+    y = "Mean absorbed N count",
+    color = "Treatment",
+    fill = "Treatment"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(legend.position = "right")
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  patchwork::wrap_plots(p_true_c, p_scatter, ncol = 1, heights = c(1, 1.2))
+} else {
+  print(p_true_c)
+  print(p_scatter)
+}
+```
+
+Sum absorb ratio of the **top 20 absorb forms** plus **Other** in each nutrient
+condition (stacked bar heights are equal per condition). The top-20 set is ranked
+globally; mixture often shows a **lower top-20 slice** because more absorb signal
+is distributed outside those 20 patterns, not because total absorption is lower
+(see true absorption boxplot above).
+
+The heatmap below uses **ComplexHeatmap** with circle markers in each cell.
+Values are row-normalized so each absorb form shows its **relative absorption**
+across the eight conditions (proportions sum to 1 per row).
+
+```{r plot-global-top20, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+absorb.global <- absorb.all.plot %>%
+  filter(group %in% nutrient.groups) %>%
+  group_by(feature_id, polarity, group, absorb_pattern, c_absorb, n_absorb) %>%
+  summarize(
+    mean_absorb_ratio = mean(absorb_fraction, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(group, absorb_pattern, c_absorb, n_absorb) %>%
+  summarize(
+    sum_absorb_ratio = sum(mean_absorb_ratio, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+top20.absorb <- absorb.global %>%
+  group_by(absorb_pattern) %>%
+  summarize(total = sum(sum_absorb_ratio, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(total)) %>%
+  dplyr::slice_head(n = 20)
+
+absorb.top20 <- absorb.global %>%
+  mutate(
+    absorb_display = if_else(
+      absorb_pattern %in% top20.absorb$absorb_pattern,
+      absorb_pattern,
+      "Other"
+    )
+  ) %>%
+  group_by(group, absorb_display) %>%
+  summarize(sum_absorb_ratio = sum(sum_absorb_ratio, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels),
+    absorb_display = if_else(
+      absorb_display == "Other",
+      "Other",
+      absorb_display
+    ),
+    absorb_display = factor(
+      absorb_display,
+      levels = c(top20.absorb$absorb_pattern, "Other")
+    )
+  )
+
+ggplot(absorb.top20, aes(x = nutrient, y = sum_absorb_ratio, fill = absorb_display)) +
+  geom_col(color = "grey30", linewidth = 0.15, width = 0.75) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
+  scale_fill_manual(
+    values = c(
+      setNames(
+        viridisLite::viridis(length(top20.absorb$absorb_pattern), option = "turbo", direction = -1),
+        top20.absorb$absorb_pattern
+      ),
+      Other = "#CCCCCC"
+    )
+  ) +
+  labs(
+    title = "Top 20 absorb forms + Other across nutrient conditions",
+    subtitle = "Equal bar height per condition; lower top-20 slice in mixture reflects broader absorb-form usage",
+    x = NULL,
+    y = "Sum absorb ratio",
+    fill = "Absorb form"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = -35, hjust = 0),
+    legend.key.size = unit(0.35, "cm"),
+    legend.text = element_text(size = 8)
+  )
+
+absorb.top20.detail <- absorb.global %>%
+  filter(absorb_pattern %in% top20.absorb$absorb_pattern) %>%
+  mutate(
+    nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels),
+    absorb_pattern = factor(absorb_pattern, levels = top20.absorb$absorb_pattern)
+  )
+
+absorb.top20.order <- absorb.global %>%
+  filter(absorb_pattern %in% top20.absorb$absorb_pattern) %>%
+  distinct(absorb_pattern, c_absorb, n_absorb) %>%
+  arrange(c_absorb, n_absorb)
+
+absorb.top20.hm <- absorb.top20.detail %>%
+  left_join(absorb.top20.order, by = "absorb_pattern") %>%
+  group_by(absorb_pattern) %>%
+  mutate(
+    relative_absorption = sum_absorb_ratio / sum(sum_absorb_ratio, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+if (requireNamespace("ComplexHeatmap", quietly = TRUE)) {
+  library(ComplexHeatmap)
+
+  hm_mat.top20 <- absorb.top20.hm %>%
+    select(absorb_pattern, group, relative_absorption) %>%
+    pivot_wider(names_from = group, values_from = relative_absorption) %>%
+    tibble::column_to_rownames("absorb_pattern") %>%
+    as.matrix()
+
+  hm_mat.top20 <- hm_mat.top20[
+    absorb.top20.order$absorb_pattern,
+    nutrient.groups,
+    drop = FALSE
+  ]
+  hm_mat.top20[is.na(hm_mat.top20)] <- 0
+
+  col_fun.top20 <- circlize::colorRamp2(
+    c(0, 0.5, 1),
+    c("#FFFFFF", "#FFCD99", "#D13B2E")
+  )
+
+  ht.top20 <- Heatmap(
+    hm_mat.top20,
+    name = "Relative\nabsorption",
+    col = col_fun.top20,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    column_title = "Relative absorption of top 20 absorb forms",
+    column_title_gp = grid::gpar(fontsize = 10, fontface = "bold"),
+    column_labels = nutrient.labels[nutrient.groups],
+    column_names_rot = 30,
+    row_names_gp = grid::gpar(fontsize = 9),
+    column_names_gp = grid::gpar(fontsize = 9),
+    rect_gp = grid::gpar(type = "none"),
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid.circle(
+        x = x,
+        y = y,
+        r = min(unit.c(width, height)) * 0.42,
+        gp = grid::gpar(fill = fill, col = fill)
+      )
+    },
+    heatmap_legend_param = list(
+      title_gp = grid::gpar(fontsize = 9),
+      labels_gp = grid::gpar(fontsize = 8)
+    )
+  )
+
+  draw(ht.top20)
+} else {
+  message("Install ComplexHeatmap for the top-20 absorb-form dot heatmap.")
+}
+```
+
+### 4.4 Boxplot: absorbed C fraction by nutrient condition
+
+Compare the fraction of unlabeled (absorbed) carbon across all metabolites,
+mirroring the boxplot panel in the nutrient comparison of `test/test.R`.
+
+```{r plot-boxplot, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+met.absorb.frac <- absorb.all.plot %>%
+  filter(group %in% nutrient.groups) %>%
+  group_by(feature_id, compound_id, metabolite, kegg_id, sample, group) %>%
+  summarize(
+    c_absorb_frac = sum(c_absorb * absorb_fraction, na.rm = TRUE) / dplyr::first(c_max),
+    n_absorb_frac = sum(n_absorb * absorb_fraction, na.rm = TRUE) / dplyr::first(n_max),
+    .groups = "drop"
+  ) %>%
+  filter(c_absorb_frac > 0.02 | n_absorb_frac > 0.02) %>%
+  mutate(
+    nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels)
+  )
+
+p_c <- ggplot(met.absorb.frac, aes(x = nutrient, y = c_absorb_frac, fill = group)) +
+  geom_boxplot(outlier.size = 0.4, linewidth = 0.3) +
+  scale_fill_manual(values = nutrient.colors, guide = "none") +
+  labs(x = NULL, y = "Absorption fraction of C", tag = "C") +
+  theme_bw(base_size = 9) +
+  theme(axis.text.x = element_text(angle = -35, hjust = 0))
+
+p_n <- ggplot(met.absorb.frac, aes(x = nutrient, y = n_absorb_frac, fill = group)) +
+  geom_boxplot(outlier.size = 0.4, linewidth = 0.3) +
+  scale_fill_manual(values = nutrient.colors, guide = "none") +
+  labs(x = NULL, y = "Absorption fraction of N", tag = "N") +
+  theme_bw(base_size = 9) +
+  theme(axis.text.x = element_blank())
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  patchwork::wrap_plots(p_c, p_n, ncol = 1)
+} else {
+  print(p_c)
+  print(p_n)
+}
+```
+
+### 4.5 Heatmap panel for selected metabolites
+
+Reproduce the per-metabolite labeling-form heatmaps from `test/test.R`, with
+rows annotated by both **labeling form** and **absorb form**.
+
+```{r plot-heatmap-panel, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+selected <- absorb.all.plot %>%
+  filter(
+    pave_formula %in% c("C10N5", "C5N1", "C6N2", "C10N3", "C21N7", "C5N0") |
+      metabolite %in% c("ATP", "Glutamate", "Glutamine", "GSH", "NAD", "R5P")
+  ) %>%
+  distinct(feature_id, metabolite, pave_formula, polarity) %>%
+  dplyr::slice_head(n = 6)
+
+if (nrow(selected) > 0 && requireNamespace("ComplexHeatmap", quietly = TRUE)) {
+  library(ComplexHeatmap)
+
+  for (i in seq_len(nrow(selected))) {
+    sub <- absorb.all.plot %>%
+      filter(
+        feature_id == selected$feature_id[i],
+        polarity == selected$polarity[i]
+      )
+
+    hm_mat <- sub %>%
+      group_by(group, label_pattern, absorb_pattern) %>%
+      summarize(fraction = mean(absorb_fraction, na.rm = TRUE), .groups = "drop") %>%
+      mutate(row_label = paste0(label_pattern, " → ", absorb_pattern)) %>%
+      select(row_label, group, fraction) %>%
+      pivot_wider(names_from = group, values_from = fraction) %>%
+      tibble::column_to_rownames("row_label") %>%
+      as.matrix()
+
+    hm_mat <- hm_mat[, nutrient.groups[nutrient.groups %in% colnames(hm_mat)], drop = FALSE]
+    hm_mat[is.na(hm_mat)] <- 0
+
+    col_fun <- circlize::colorRamp2(
+      c(0, max(hm_mat) / 2, max(hm_mat)),
+      c("#FFFFFF", "#FFCD99", "#D13B2E")
+    )
+
+    ht <- Heatmap(
+      hm_mat,
+      name = "Fraction",
+      col = col_fun,
+      cluster_rows = FALSE,
+      cluster_columns = FALSE,
+      column_title = paste0(selected$metabolite[i], " (", selected$pave_formula[i], ")"),
+      column_title_gp = grid::gpar(fontsize = 9),
+      row_names_gp = grid::gpar(fontsize = 7),
+      column_labels = nutrient.labels[colnames(hm_mat)]
+    )
+    draw(ht)
+  }
+} else if (nrow(selected) == 0) {
+  message("No selected metabolites found in absorb results.")
+} else {
+  message("Install ComplexHeatmap for multi-metabolite heatmap panels.")
+}
+```
+
+### 4.6 Differential metabolites by top-20 absorb profile
+
+Each metabolite is represented as a **length-20 vector** of mean absorb ratios
+for the globally defined top 20 absorb forms (missing forms = 0). For every
+metabolite, an **8 × 20** matrix is built (nutrient groups × absorb forms).
+Metabolites are ranked by the maximum pairwise Euclidean distance between
+group centroids (`diff_score`); higher scores indicate stronger absorb-profile
+shifts across nutrient conditions.
+
+```{r plot-diff-metabolites, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
+if (!exists("top20.absorb")) {
+  top20.absorb <- absorb.all.plot %>%
+    filter(group %in% nutrient.groups) %>%
+    group_by(feature_id, polarity, group, absorb_pattern) %>%
+    summarize(mean_absorb_ratio = mean(absorb_fraction, na.rm = TRUE), .groups = "drop") %>%
+    group_by(absorb_pattern) %>%
+    summarize(total = sum(mean_absorb_ratio, na.rm = TRUE), .groups = "drop") %>%
+    arrange(desc(total)) %>%
+    dplyr::slice_head(n = 50)
+}
+
+top20.forms <- top20.absorb$absorb_pattern
+
+met_absorb_vector <- absorb.all.plot %>%
+  filter(
+    group %in% nutrient.groups,
+    absorb_pattern %in% top20.forms
+  ) %>%
+  group_by(
+    feature_id, polarity, metabolite, compound_id, pave_formula, kegg_id,
+    group, absorb_pattern
+  ) %>%
+  summarize(absorb_ratio = mean(absorb_fraction, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::complete(
+    tidyr::nesting(
+      feature_id, polarity, metabolite, compound_id, pave_formula, kegg_id
+    ),
+    group = nutrient.groups,
+    absorb_pattern = top20.forms,
+    fill = list(absorb_ratio = 0)
+  )
+
+met_absorb_wide <- met_absorb_vector %>%
+  pivot_wider(
+    id_cols = c(
+      feature_id, polarity, metabolite, compound_id, pave_formula, kegg_id, group
+    ),
+    names_from = absorb_pattern,
+    values_from = absorb_ratio
+  )
+
+met_label <- function(metabolite, pave_formula, feature_id, polarity) {
+  nm <- dplyr::coalesce(as.character(metabolite), as.character(pave_formula))
+  paste0(nm, " (", polarity, " #", feature_id, ")")
+}
+
+met_diff <- met_absorb_wide %>%
+  mutate(
+    met_label = met_label(metabolite, pave_formula, feature_id, polarity)
+  ) %>%
+  group_by(feature_id, polarity, metabolite, compound_id, pave_formula, kegg_id, met_label) %>%
+  summarize(
+    diff_score = {
+      mat <- as.matrix(dplyr::across(dplyr::all_of(top20.forms)))
+      if (nrow(mat) < 2) 0 else max(stats::dist(mat))
+    },
+    sum_var = {
+      mat <- as.matrix(dplyr::across(dplyr::all_of(top20.forms)))
+      sum(apply(mat, 2, stats::var, na.rm = TRUE))
+    },
+    absorb_profile = list({
+      mat <- as.matrix(dplyr::across(dplyr::all_of(top20.forms)))
+      stats::setNames(colMeans(mat), top20.forms)
+    }),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(diff_score), desc(sum_var))
+
+top_n_diff <- 30
+top_diff_mets <- met_diff %>%
+  dplyr::slice_head(n = top_n_diff)
+
+knitr::kable(
+  top_diff_mets %>%
+    select(
+      met_label, feature_id, compound_id, pave_formula, polarity,
+      diff_score, sum_var
+    ) %>%
+    dplyr::slice_head(n = 20),
+  caption = "Top 20 metabolites ranked by absorb-profile distance across nutrient groups"
+)
+
+p_diff_bar <- ggplot(
+  top_diff_mets %>% dplyr::slice_head(n = 20),
+  aes(x = reorder(met_label, diff_score), y = diff_score, fill = polarity)
+) +
+  geom_col(width = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Most differential metabolites (top-20 absorb profile)",
+    x = NULL,
+    y = "Max pairwise distance across 8 groups",
+    fill = "Polarity"
+  ) +
+  theme_bw(base_size = 6) +
+  theme(legend.position = "bottom")
+
+print(p_diff_bar)
+
+if (requireNamespace("ComplexHeatmap", quietly = TRUE)) {
+  hm_diff <- met_absorb_vector %>%
+    inner_join(
+      top_diff_mets %>%
+        select(feature_id, polarity, met_label),
+      by = c("feature_id", "polarity")
+    ) %>%
+    mutate(
+      col_key = paste0(group, "|", absorb_pattern),
+      met_label = factor(met_label, levels = rev(unique(top_diff_mets$met_label)))
+    ) %>%
+    select(met_label, col_key, absorb_ratio) %>%
+    pivot_wider(names_from = col_key, values_from = absorb_ratio) %>%
+    tibble::column_to_rownames("met_label") %>%
+    as.matrix()
+
+  col_order <- as.vector(t(outer(nutrient.groups, top20.forms, paste, sep = "|")))
+  col_order <- col_order[col_order %in% colnames(hm_diff)]
+  hm_diff <- hm_diff[, col_order, drop = FALSE]
+  hm_diff[is.na(hm_diff)] <- 0
+
+  col_fun_diff <- circlize::colorRamp2(
+    c(0, max(hm_diff) / 2, max(hm_diff)),
+    c("#FFFFFF", "#FFCD99", "#D13B2E")
+  )
+
+  col_split_diff <- factor(
+    gsub("\\|.*$", "", colnames(hm_diff)),
+    levels = nutrient.groups
+  )
+
+  ht_diff <- Heatmap(
+    hm_diff,
+    name = "Absorb\nratio",
+    col = col_fun_diff,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    column_split = col_split_diff,
+    column_title_gp = grid::gpar(fontsize = 8),
+    column_labels = gsub("^.*\\|", "", colnames(hm_diff)),
+    column_names_rot = 90,
+    row_names_gp = grid::gpar(fontsize = 7),
+    column_names_gp = grid::gpar(fontsize = 6),
+    rect_gp = grid::gpar(type = "none"),
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid.circle(
+        x = x,
+        y = y,
+        r = min(unit.c(width, height)) * 0.42,
+        gp = grid::gpar(fill = fill, col = fill)
+      )
+    },
+    column_title = "Top differential metabolites: top-20 absorb ratio profile",
+    heatmap_legend_param = list(
+      title_gp = grid::gpar(fontsize = 9),
+      labels_gp = grid::gpar(fontsize = 8)
+    )
+  )
+
+  draw(ht_diff)
+} else {
+  hm_gg <- met_absorb_vector %>%
+    inner_join(
+      top_diff_mets %>% select(feature_id, polarity, met_label),
+      by = c("feature_id", "polarity")
+    ) %>%
+    mutate(
+      nutrient = factor(group, levels = nutrient.groups, labels = nutrient.labels),
+      met_label = factor(met_label, levels = rev(unique(top_diff_mets$met_label)))
+    )
+
+  ggplot(hm_gg, aes(x = absorb_pattern, y = met_label, fill = absorb_ratio)) +
+    geom_tile(color = "white", linewidth = 0.2) +
+    facet_wrap(~ nutrient, nrow = 1, scales = "free_x") +
+    scale_fill_gradient2(
+      low = "#FFFFFF", mid = "#FFCD99", high = "#D13B2E",
+      midpoint = max(hm_gg$absorb_ratio, na.rm = TRUE) / 2
+    ) +
+    labs(
+      title = "Top differential metabolites (ggplot fallback)",
+      x = "Top 20 absorb form",
+      y = NULL,
+      fill = "Absorb ratio"
+    ) +
+    theme_bw(base_size = 8) +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6),
+      panel.grid = element_blank()
+    )
+}
+```
+
+## 5. Session info
+
+```{r session-info}
+sessionInfo()
 ```
