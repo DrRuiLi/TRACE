@@ -10,7 +10,7 @@ TRACE_get_CN_net(
   rt.tol = 10,
   ppm = 5,
   ratio.adjust = c(1, 1, 1, 1),
-  TRACE_cor_cutoff = 0.7
+  TRACE_cor_cutoff = 0.75
 )
 }
 \arguments{

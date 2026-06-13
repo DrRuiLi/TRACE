@@ -74,3 +74,17 @@ analysis should be stored in the MSdev object@advancedAna$TRACE_temp
 
 ## TRACE_export
 1. write a function TRACE_export to export the TRACE result to a xlsx file.
+
+## plot_TRACE_labeling_fraction 
+1. write a function 'plot_TRACE_labeling_fraction' to plot the labeling fraction of features:
+  - input: MSdev object
+  - this function plot the labeling fraction of features for each metabolties and sample:
+    - for metabolites, all possible CxNy should be count: feature matched to C0N0, C1N0, C1N2, ..., CxNy should be count
+    - the ratio lableing ratio for samples:
+    - S13C15N: CxNy/total 
+    - S12C15N: C0Ny/total
+    - S13C14N: CxN0/total
+    - S12C14N: C0N0/total
+  - use geom_box and geom_point to show lableing ratio
+2. add label to indicate every group's calculation, such as  S13C15N: CxNy/total 
+3. add p2: geom_density to show the distribution of the labeling ratio, use patchwork to combine the two plots.

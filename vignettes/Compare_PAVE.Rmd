@@ -67,23 +67,172 @@ object <- MSdev_set_param(
 #object@xcmsData
 
 MSdev_save(object)
+TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx")
 ```
 
 ### TRACE analysis
 
 ```{r}
-object <- TRACE_workflow(object)
-MSdev_save(object)
+#object <- TRACE_workflow(object)
+#MSdev_save(object)
 ```
 
+### result 
+```{r}
+{
+  library(dplyr)
+
+  pave.file <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"
+  trace.file <- "d:/temp/TRACE.xlsx"
+  trace.sheet <- "AllFeatures_Negative"
+
+  pave.df.raw <- openxlsx::read.xlsx(pave.file)
+  trace.df.raw <-  openxlsx::read.xlsx(  trace.file,sheet = trace.sheet )
+  pave.df <- pave.df.raw %>%
+    dplyr::mutate(
+      feature_id = as.integer(gsub("[^0-9]+", "", feature_id)),
+      formula_pave = paste0("C", C_num, "N", N_num),
+      type_pave = dplyr::case_when(
+        is.na(feature) | feature == "Background" ~ "blank/noise",
+        TRUE ~ as.character(feature)
+      ),
+      type_pave = case_when(
+        type_pave %in% c("Metabolite","Isotope","Fragment","Adduct")~type_pave,
+        T~"blank/noise"
+      ),
+      score_pave = score,
+      pave_cn = formula_pave != "C0N0"
+    ) %>%
+    dplyr::select(
+      feature_id,
+      mz_pave = mz,
+      rt_pave = rt,
+      formula_pave,
+      type_pave,
+      score_pave,
+      pave_cn
+    )
+
+  trace.df <- openxlsx::read.xlsx(
+    trace.file,
+    sheet = trace.sheet
+  ) %>%
+    dplyr::mutate(
+      feature_id = as.integer(feature_id),
+      formula_trace = as.character(TRACE_formula),
+      type_trace = dplyr::case_when(
+        is.na(type) | type == "" ~ "blank/noise",
+        TRUE ~ as.character(type)
+      ),
+      trace_cn =  !is.na(TRACE_formula),
+      seed_trace = seed
+    ) %>%
+    dplyr::select(
+      feature_id,
+      mz_trace = mz,
+      rt_trace = rt,
+      formula_trace,
+      type_trace,
+      seed_trace,
+      trace_cn
+    )
+
+  ratio.df <- tryCatch(
+    openxlsx::read.xlsx(
+      trace.file
+    ),
+    error = function(e) NULL
+  )
+
+  pave.trace.merged <- dplyr::full_join(pave.df, trace.df, by = "feature_id") %>%
+    dplyr::mutate(
+      type_pave = if_else(is.na(type_pave),"blank/noise",type_pave),
+      cn_match = trace_cn &
+        pave_cn &
+        !is.na(formula_trace) &
+        formula_trace != "" &
+        formula_pave == formula_trace,
+      cn_assignment = dplyr::case_when(
+        trace_cn & pave_cn ~ "both",
+        trace_cn & !pave_cn ~ "TRACE_only",
+        !trace_cn & pave_cn ~ "PAVE_only",
+        TRUE ~ "neither"
+      )
+    )
+
+  if (!is.null(ratio.df) && all(c("TRACE_seed", "TRACE_cor") %in% names(ratio.df))) {
+    trace.cor.map <- stats::setNames(ratio.df$TRACE_cor, as.character(ratio.df$TRACE_seed))
+    pave.trace.merged$trace_cor <- as.numeric(
+      trace.cor.map[as.character(pave.trace.merged$seed_trace)]
+    )
+  } else {
+    pave.trace.merged$trace_cor <- NA_real_
+  }
+  pave.trace.merged$trace_cor <- ifelse(
+    is.finite(pave.trace.merged$trace_cor),
+    pave.trace.merged$trace_cor,
+    pave.trace.merged$score_pave
+  )
+
+  pave.trace.merged <- pave.trace.merged %>%
+    dplyr::select(
+      feature_id,
+      formula_pave,
+      formula_trace,
+      type_pave,
+      type_trace,
+      score_pave,
+      trace_cor,
+      pave_cn,
+      trace_cn,
+      cn_match,
+      cn_assignment,
+      mz_pave,
+      rt_pave,
+      mz_trace,
+      rt_trace,
+      seed_trace
+    ) %>%
+    dplyr::arrange(feature_id)
+
+
+  ggplot(pave.trace.merged,aes(x = type_trace,y = type_pave))+
+    geom_count()+
+    scale_size(range = c(1,20),
+               transform = "sqrt")+
+    stat_sum(
+      aes(label = after_stat(n)),
+      geom = "text",
+      color = "white",
+      size = 3.5,
+      show.legend = FALSE
+    )
+
+
+}
+```
+
+
+
+
 ### Compare PAVE and TRACE result
-1. the PAVE-matlab result was stored in the `PAVE_matlab` folder, the TRACE result was stored in the `"c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"`
-2. the TRACE result was stored in the `"d:/temp/TRACE.xlsx"`
-3. read in both of these files and write code to compare the result, code append to "test/test.R" and placed in {}
-4. the code should compare and plot:
-  - a dot plot, x with annotation type of TRACE, y is annotation type of PAVE-matlab, the color is the correlation score of the TRACE result, the size is the number of features
-  - a radar plot, the ratio of the CN formula matched
-5. do not use mz/rt match, the feature_id has been matched in the TRACE_workflow, just use the feature_id to compare the result
-6. the p1 should contain blank/noise
-7. P2 use the pie plot, just show ratio of CN mathced/unmatched count of TRACE and PAVE-matlab
-8. align the two result with feature_id: trace$feature_id  and pave$feature_id (its numeric part), do not use .match_mz_rt
+
+1.  the PAVE-matlab result was stored in the `PAVE_matlab` folder, the TRACE result was stored in the `"c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"`
+2.  the TRACE result was stored in the `"d:/temp/TRACE.xlsx"`
+3.  read in both of these files and write code to compare the result, code append to "test/test.R" and placed in {}
+4.  the code should compare and plot:
+
+- a dot plot, x with annotation type of TRACE, y is annotation type of PAVE-matlab, the color is the correlation score of the TRACE result, the size is the number of features
+- a radar plot, the ratio of the CN formula matched
+
+5.  do not use mz/rt match, the feature_id has been matched in the TRACE_workflow, just use the feature_id to compare the result
+6.  the p1 should contain blank/noise
+7.  P2 use the pie plot, just show ratio of CN mathced/unmatched count of TRACE and PAVE-matlab
+8.  align the two result with feature_id: trace$feature_id  and pave$feature_id (its numeric part), do not use .match_mz_rt
+
+#### CN net compare
+
+1.  distinct the features assigned to CN from TRACE and PAVE-matlab, plot the ratio of features assigned to CN in TRACE but not in PAVE-matlab, and the ratio of features assigned to CN in PAVE-matlab but not in TRACE.
+2.  merge the two result to one data.frame, with columns:
+
+- feature_id, formula_pave, formula_trace, ......
