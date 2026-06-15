@@ -932,10 +932,25 @@ chemform_simplify <- function(chemform){
 chemform_remove_iso <- function(chemform){
 
   ele.matrix <- MSCC::chemform_parse(chemform)
-  iso.idx <- colnames(ele.matrix)[is.isotope(colnames(ele.matrix))]
-  ele.matrix[,get_ele_uniso(iso.idx)] <- ele.matrix[,get_ele_uniso(iso.idx),drop = F]+
-    ele.matrix[,iso.idx,drop = F]
-  ele.matrix <- ele.matrix[,!is.isotope(colnames(ele.matrix)),drop = F]
+  iso.idx <- colnames(ele.matrix)[MSdev:::is.isotope(colnames(ele.matrix))]
+  if (length(iso.idx)) {
+    base.idx <- MSdev:::get_ele_uniso(iso.idx)
+    # chemform_parse() returns a matrix, which cannot create new columns by name,
+    # so add any missing base-element columns (e.g. a pure "[13]C" diff has no "C").
+    missing.base <- setdiff(unique(base.idx), colnames(ele.matrix))
+    if (length(missing.base)) {
+      add <- matrix(
+        0, nrow = nrow(ele.matrix), ncol = length(missing.base),
+        dimnames = list(rownames(ele.matrix), missing.base)
+      )
+      ele.matrix <- cbind(ele.matrix, add)
+    }
+    # accumulate per isotope so duplicate base elements (e.g. [13]C and [14]C) sum
+    for (k in seq_along(iso.idx)) {
+      ele.matrix[, base.idx[k]] <- ele.matrix[, base.idx[k]] + ele.matrix[, iso.idx[k]]
+    }
+    ele.matrix <- ele.matrix[, !MSdev:::is.isotope(colnames(ele.matrix)), drop = FALSE]
+  }
   MSCC:::chemform_from_ele_matrix(ele.matrix)
 
 }

@@ -285,7 +285,7 @@ TRACE_dynamic_filter <- function(object, i.pol) {
 
   p.r <- ggplot2::ggplot(cn.net.eval) +
     ggplot2::geom_histogram(
-      ggplot2::aes(y = rt.diff, x = after_stat(density), fill = cn.hit),
+      ggplot2::aes(y = rt.diff, x = ggplot2::after_stat(density), fill = cn.hit),
       position = "dodge",
       bins = 20,
       col = "white"
@@ -316,7 +316,7 @@ TRACE_dynamic_filter <- function(object, i.pol) {
 
   p.u <- ggplot2::ggplot(cn.net.eval) +
     ggplot2::geom_histogram(
-      ggplot2::aes(x = mz.ppm, y = after_stat(density), fill = cn.hit),
+      ggplot2::aes(x = mz.ppm, y = ggplot2::after_stat(density), fill = cn.hit),
       position = "dodge",
       bins = 20,
       col = "white"
@@ -371,6 +371,7 @@ TRACE_dynamic_filter <- function(object, i.pol) {
     "C:\\Users\\91879\\OneDrive\\Documents\\YLF_Lab\\Project\\2025.10.10.TRACE\\result/dynamic error/",
     basename(fo)
   )
+  dir.create(dirname(fo), recursive = TRUE, showWarnings = FALSE)
   MSdev::export_graph2pdf(p.all, file_path = fo, width = 3, height = 3, append = i.pol)
 
   cn.net.filter <- cn.net.hit[abs(mz.ppm) > ppm.dyn | abs(rt.diff) > rt.tol.dyn]
@@ -484,7 +485,9 @@ TRACE_network_assignment <- function(
 #' @param i.pol Polarity index. `0` for negative and `1` for positive.
 #' @param cpdb Path to compound table xlsx used for candidate assignment.
 #'
-#' @returns Updated MSdev object with `object@advancedAna$TRACE[[pol]]`.
+#' @returns Updated MSdev object with `object@advancedAna$TRACE[[pol]]`, including
+#'   `TRACE_cor`, `TRACE_net_score`, `TRACE_anno_score`, `TRACE_fragment`, and
+#'   `TRACE_isotope` columns when available.
 #' @export
 TRACE_annotate <- function(
     object,
@@ -518,7 +521,11 @@ TRACE_annotate <- function(
   if (!is.null(cn.seed.assign)) {
     cn.seed.vdata <- cn.seed.vdata %>%
       dplyr::left_join(
-        cn.seed.assign %>% dplyr::select(name, assign.group, assign.seed, conn.component),
+        cn.seed.assign %>%
+          dplyr::select(
+            name,
+            dplyr::any_of(c("assign.group", "assign.seed", "conn.component", "TRACE_net_score"))
+          ),
         by = "name"
       )
   }
@@ -574,7 +581,12 @@ TRACE_annotate <- function(
       dplyr::filter(type != "fragment", to == x.name) %>%
       dplyr::select(type, eid, adduct = adduct.to, seed = from, fragment, element)
 
-    anno <- dplyr::bind_rows(x.from, x.to)
+    # Incoming fragment edges (parent -> daughter); excluded from x.to above.
+    x.fg_in <- MSdev::edata(cn.seed.ig) %>%
+      dplyr::filter(type == "fragment", to == x.name) %>%
+      dplyr::select(type, eid, adduct = adduct.to, seed = from, fragment, element)
+
+    anno <- dplyr::bind_rows(x.fg_in, x.to, x.from)
     ad.score <- ifelse(x.candi.adduct %in% anno$adduct, 1, 0)
     rt.score <- 1 - abs(x.candi.rtd) / 1000
     rt.score[rt.score < 0] <- 0
@@ -586,6 +598,8 @@ TRACE_annotate <- function(
         name = x.name,
         type = "metabolite",
         seed = x.name,
+        TRACE_fragment = NA_character_,
+        TRACE_isotope = NA_character_,
         score = score[idx],
         compound.id = x.candi.id[idx],
         compound.formula = x.candi.formula[idx],
@@ -596,16 +610,29 @@ TRACE_annotate <- function(
 
     if (any(c("fragment", "isotope") %in% anno$type)) {
       x.anno <- anno %>%
-        dplyr::filter(type %in% c("fragment", "isotope")) %>%
+        dplyr::filter(type %in% c("fragment", "isotope"), seed != x.name) %>%
         dplyr::slice_head(n = 1)
-      x.seed <- x.anno$seed
-      if (!is.null(cn.seed.assign) && x.name %in% cn.seed.assign$name) {
-        x.seed <- cn.seed.assign$assign.seed[match(x.name, cn.seed.assign$name)]
+      if (!nrow(x.anno)) {
+        x.anno <- anno %>%
+          dplyr::filter(type %in% c("fragment", "isotope")) %>%
+          dplyr::slice_head(n = 1)
       }
+      # Keep the MS-network parent as seed; assign.seed is the global-assignment
+      # group representative and equals self for singleton compatibility clusters.
       return(data.frame(
         name = x.name,
         type = x.anno$type,
-        seed = x.seed,
+        seed = x.anno$seed,
+        TRACE_fragment = if (x.anno$type == "fragment") {
+          as.character(x.anno$fragment)
+        } else {
+          NA_character_
+        },
+        TRACE_isotope = if (x.anno$type == "isotope") {
+          as.character(x.anno$element)
+        } else {
+          NA_character_
+        },
         score = 0,
         compound.id = NA,
         compound.formula = NA,
@@ -619,6 +646,8 @@ TRACE_annotate <- function(
         name = x.name,
         type = "metabolite",
         seed = x.name,
+        TRACE_fragment = NA_character_,
+        TRACE_isotope = NA_character_,
         score = 0,
         compound.id = x.candi.id[1],
         compound.formula = x.candi.formula[1],
@@ -631,6 +660,8 @@ TRACE_annotate <- function(
       name = x.name,
       type = "unknown",
       seed = NA,
+      TRACE_fragment = NA_character_,
+      TRACE_isotope = NA_character_,
       score = 0,
       compound.id = NA,
       compound.formula = NA,
@@ -653,9 +684,10 @@ TRACE_annotate <- function(
     dplyr::filter(type %in% "metabolite") %>%
     dplyr::mutate(
       score.ad = adducts.score[compound.adduct],
+      score.ad = ifelse(is.na(score.ad), 0, score.ad),
       score.rt = 1 - abs(rt - compound.rt) / 1e5,
-      score.rt = ifelse(score.rt < 0, 0, score.rt),
-      score = score.rt + score.ad
+      score.rt = ifelse(score.rt < 0 | is.na(score.rt), 0, score.rt),
+      score = (score.rt + score.ad) / 2
     ) %>%
     dplyr::group_by(compound.id) %>%
     dplyr::arrange(dplyr::desc(score)) %>%
@@ -699,17 +731,50 @@ TRACE_annotate <- function(
 
   cn.seed.vdata3 <- rbind(cn.seed.vdata.known, cn.seed.vdata.unknown, cn.seed.vdata.fi)
   if (!is.null(cn.seed.assign)) {
+    assign.cols <- cn.seed.assign %>%
+      dplyr::select(
+        name,
+        dplyr::any_of(c("assign.group", "assign.seed", "conn.component", "TRACE_net_score"))
+      )
     cn.seed.vdata3 <- cn.seed.vdata3 %>%
-      dplyr::left_join(
-        cn.seed.assign %>% dplyr::select(name, assign.group, assign.seed, conn.component),
-        by = "name"
+      dplyr::select(-dplyr::any_of(c("assign.group", "assign.seed", "conn.component", "TRACE_net_score"))) %>%
+      dplyr::left_join(assign.cols, by = "name")
+  }
+
+  cn.net.hit <- .trace_get_temp(object, pol, "cn.net.hit")
+  if (!is.null(cn.net.hit) && nrow(cn.net.hit)) {
+    cor.map <- cn.net.hit %>%
+      as.data.frame() %>%
+      dplyr::group_by(from) %>%
+      dplyr::slice(1) %>%
+      dplyr::ungroup()
+    cor.by.from <- stats::setNames(cor.map$TRACE_cor, as.character(cor.map$from))
+    cn.seed.vdata3 <- cn.seed.vdata3 %>%
+      dplyr::mutate(
+        TRACE_cor = dplyr::coalesce(
+          as.numeric(cor.by.from[as.character(name)]),
+          as.numeric(cor.by.from[as.character(seed)])
+        )
       )
   }
+  if (!"TRACE_cor" %in% names(cn.seed.vdata3)) {
+    cn.seed.vdata3$TRACE_cor <- NA_real_
+  }
+  if (!"TRACE_net_score" %in% names(cn.seed.vdata3)) {
+    cn.seed.vdata3$TRACE_net_score <- NA_real_
+  }
+
   cn.seed.vdata3 <- cn.seed.vdata3 %>%
+    dplyr::rename(TRACE_anno_score = score) %>%
     dplyr::select(
       feature_id = name,
       TRACE_formula,
       mz, rt, type, seed,
+      TRACE_fragment,
+      TRACE_isotope,
+      TRACE_cor,
+      TRACE_net_score,
+      TRACE_anno_score,
       dplyr::any_of(c("assign.group", "assign.seed", "conn.component")),
       compound_id = compound.id, compound.formula,
       compound.adduct, compound.rt
@@ -1011,9 +1076,11 @@ TRACE_CN_labelling_ratio_adjust <- function(object, eval_top = 0.2, plot = FALSE
 #' Export TRACE results to xlsx
 #'
 #' Writes TRACE results to an Excel workbook, including one sheet per polarity
-#' with **all xcms features** and their TRACE annotations (if present).
-#' Additional sheets include the raw TRACE annotation tables and (when
-#' available) CN labelling-ratio outputs from `object@advancedAna$TRACE_temp`.
+#' with **all xcms features** and their TRACE annotations (if present),
+#' including `type`, `TRACE_fragment`, `TRACE_isotope`, `TRACE_cor`,
+#' `TRACE_net_score`, and `TRACE_anno_score` when available. Additional sheets include the raw TRACE annotation tables
+#' and (when available) CN labelling-ratio outputs from
+#' `object@advancedAna$TRACE_temp`.
 #'
 #' @param object MSdev object with TRACE results in `object@advancedAna$TRACE`.
 #' @param file Output xlsx path. Default is
@@ -1059,7 +1126,7 @@ TRACE_export <- function(object, file = NULL) {
       df.list[[paste0("AllFeatures_", pol)]] <- all.df
     }
 
-    # Raw TRACE annotation table (only features in seed network)
+    # Raw TRACE annotation table (seed network only; same as object@advancedAna$TRACE)
     if (!is.null(x) && nrow(x)) {
       df.list[[paste0("TRACE_", pol)]] <- as.data.frame(x)
     }

@@ -109,54 +109,82 @@
     dplyr::mutate(eid = dplyr::row_number())
 }
 
-#' Ordered edge rows along a vertex path
+#' Pre-parse all unique chemform_diff strings and blocked set into numeric matrices.
+#' Returns a list with:
+#'   $cd_mat  - named numeric matrix (rows = unique chemform strings, cols = elements)
+#'   $bl_rows - integer vector of row indices in cd_mat that are blocked
+#'   $eid_from, $eid_to, $eid_cd_row, $eid_mzppm, $eid_rtdiff - per-edge lookup vectors
 #' @noRd
-.trace_path_edge_rows <- function(eda, vpath) {
-  vpath <- as.character(vpath)
-  out <- vector("list", length(vpath) - 1L)
-  for (k in seq_len(length(vpath) - 1L)) {
-    f <- vpath[k]
-    t <- vpath[k + 1L]
-    fwd <- eda[as.character(eda$from) == f & as.character(eda$to) == t, , drop = FALSE]
-    if (nrow(fwd)) {
-      out[[k]] <- list(row = fwd[1, , drop = FALSE], dir = 1L)
-    } else {
-      rev <- eda[as.character(eda$from) == t & as.character(eda$to) == f, , drop = FALSE]
-      if (!nrow(rev)) {
-        return(NULL)
-      }
-      out[[k]] <- list(row = rev[1, , drop = FALSE], dir = -1L)
+.trace_build_score_cache <- function(eda, blocked_chemforms) {
+  cds <- as.character(eda$chemform_diff)
+  cds[is.na(cds)] <- ""
+  # parse all unique chemforms at once (single MSCC call)
+  all_cds <- unique(c(cds, blocked_chemforms, ""))
+  raw_mat <- MSCC::chemform_parse(all_cds)
+  # Strip isotope columns: fold their counts into the base element columns so
+  # net-path comparison is on a simplified (non-isotope) element basis.
+  iso_names <- colnames(raw_mat)[MSdev:::is.isotope(colnames(raw_mat))]
+  if (length(iso_names)) {
+    base_names <- MSdev:::get_ele_uniso(iso_names)
+    missing_base <- setdiff(unique(base_names), colnames(raw_mat))
+    if (length(missing_base)) {
+      add <- matrix(0, nrow(raw_mat), length(missing_base),
+                    dimnames = list(rownames(raw_mat), missing_base))
+      raw_mat <- cbind(raw_mat, add)
     }
+    for (k in seq_along(iso_names)) {
+      raw_mat[, base_names[k]] <- raw_mat[, base_names[k]] + raw_mat[, iso_names[k]]
+    }
+    raw_mat <- raw_mat[, !MSdev:::is.isotope(colnames(raw_mat)), drop = FALSE]
   }
-  out
+  rownames(raw_mat) <- all_cds
+  # identify which rows correspond to blocked chemforms
+  bl_rows <- which(all_cds %in% blocked_chemforms)
+  # per-edge lookup
+  eid_cd_row <- match(cds, all_cds)
+  list(
+    cd_mat      = raw_mat,
+    all_cds     = all_cds,
+    bl_rows     = bl_rows,
+    eid_cd_row  = eid_cd_row,
+    eid_from    = as.character(eda$from),
+    eid_to      = as.character(eda$to),
+    eid_mzppm   = abs(as.numeric(eda$mz.ppm)),
+    eid_rtdiff  = abs(as.numeric(eda$rt.diff))
+  )
 }
 
-#' Score one simple path; blocked if net chemform matches MS mass-diff table
+#' Score one simple path using precomputed numeric cache (no per-path MSCC calls).
 #' @noRd
-.trace_score_path <- function(eda, vpath, blocked_chemforms, ppm.dyn, rt.tol.dyn) {
-  if (length(vpath) < 2L) {
-    return(list(score = 1, blocked = FALSE, net_chemform = ""))
+.trace_score_path_fast <- function(vpath, cache, ppm.dyn, rt.tol.dyn) {
+  n <- length(vpath)
+  if (n < 2L) return(list(score = 1, blocked = FALSE))
+  # gather edge rows and directions
+  edge_idx  <- integer(n - 1L)
+  dirs      <- integer(n - 1L)
+  for (k in seq_len(n - 1L)) {
+    f <- vpath[k]; t <- vpath[k + 1L]
+    fwd <- which(cache$eid_from == f & cache$eid_to == t)
+    if (length(fwd)) {
+      edge_idx[k] <- fwd[1L]; dirs[k] <- 1L
+    } else {
+      rev <- which(cache$eid_from == t & cache$eid_to == f)
+      if (!length(rev)) return(list(score = 0, blocked = TRUE))
+      edge_idx[k] <- rev[1L]; dirs[k] <- -1L
+    }
   }
-  rows <- .trace_path_edge_rows(eda, vpath)
-  if (is.null(rows)) {
-    return(list(score = 0, blocked = TRUE, net_chemform = NA_character_))
-  }
-  edge_df <- dplyr::bind_rows(lapply(rows, function(x) x$row))
-  dirs <- vapply(rows, function(x) x$dir, integer(1))
-  cds <- edge_df$chemform_diff
-  cds[is.na(cds)] <- ""
-  cds <- MSCC::chemform_multi(cds, dirs, return = "chemform")
-  net_cd <- MSCC:::chemform_sum(cds)
-  net_cd <- chemform_remove_iso(net_cd)
-  net_cd <- chemform_simplify(net_cd)
-  blocked <- nzchar(net_cd) && net_cd %in% blocked_chemforms
-  if (blocked) {
-    return(list(score = 0, blocked = TRUE, net_chemform = net_cd))
-  }
-  mz_sum <- sum(abs(edge_df$mz.ppm), na.rm = TRUE)
-  rt_sum <- sum(abs(edge_df$rt.diff), na.rm = TRUE)
-  score <- max(0, 1 - mz_sum / ppm.dyn - rt_sum / rt.tol.dyn)
-  list(score = score, blocked = FALSE, net_chemform = net_cd)
+  # net element vector: sum(dir_k * cd_mat[edge_k, ])
+  cd_rows <- cache$eid_cd_row[edge_idx]
+  net_vec <- colSums(cache$cd_mat[cd_rows, , drop = FALSE] * dirs)
+  # blocked if net vector matches any blocked row
+  blocked <- any(vapply(cache$bl_rows, function(r) {
+    all(cache$cd_mat[r, ] == net_vec)
+  }, logical(1)))
+  if (blocked) return(list(score = 0, blocked = TRUE))
+  mz_sum <- sum(cache$eid_mzppm[edge_idx], na.rm = TRUE)
+  rt_sum <- sum(cache$eid_rtdiff[edge_idx], na.rm = TRUE)
+  score  <- max(0, 1 - mz_sum / ppm.dyn - rt_sum / rt.tol.dyn)
+  list(score = score, blocked = FALSE)
 }
 
 #' Best connection score between two nodes (max over simple paths)
@@ -165,39 +193,23 @@
     ig,
     from,
     to,
-    blocked_chemforms,
+    cache,
     ppm.dyn,
     rt.tol.dyn,
-    max_path_length = 6L) {
+    max_path_length = 5L) {
   from <- as.character(from)
-  to <- as.character(to)
-  if (from == to) {
-    return(list(score = 1, blocked = FALSE))
-  }
-  eda <- MSdev::edata(ig)
-  vpaths <- igraph::all_simple_paths(
-    ig,
-    from = from,
-    to = to,
-    mode = "all",
-    cutoff = max_path_length
-  )
-  if (length(vpaths) == 0L) {
-    return(list(score = 0, blocked = TRUE))
-  }
-  best <- 0
-  any_ok <- FALSE
+  to   <- as.character(to)
+  if (from == to) return(list(score = 1, blocked = FALSE))
+  vpaths <- igraph::all_simple_paths(ig, from = from, to = to,
+                                     mode = "all", cutoff = max_path_length)
+  if (!length(vpaths)) return(list(score = 0, blocked = TRUE))
+  best <- 0; any_ok <- FALSE
   for (vp in vpaths) {
-    vp <- as.character(vp)
-    res <- .trace_score_path(eda, vp, blocked_chemforms, ppm.dyn, rt.tol.dyn)
-    if (!res$blocked) {
-      any_ok <- TRUE
-      best <- max(best, res$score)
-    }
+    vp  <- igraph::as_ids(vp)
+    res <- .trace_score_path_fast(vp, cache, ppm.dyn, rt.tol.dyn)
+    if (!res$blocked) { any_ok <- TRUE; best <- max(best, res$score) }
   }
-  if (!any_ok) {
-    return(list(score = 0, blocked = TRUE))
-  }
+  if (!any_ok) return(list(score = 0, blocked = TRUE))
   list(score = best, blocked = FALSE)
 }
 
@@ -209,7 +221,7 @@
     blocked_chemforms,
     ppm.dyn,
     rt.tol.dyn,
-    max_path_length = 6L,
+    max_path_length = 5L,
     connection_cutoff = 0.5) {
   nodes <- as.character(nodes)
   n <- length(nodes)
@@ -218,9 +230,12 @@
       name = nodes,
       assign.group = 1L,
       assign.seed = nodes,
+      TRACE_net_score = NA_real_,
       stringsAsFactors = FALSE
     ))
   }
+  # Build numeric chemform cache once per component (single MSCC parse call).
+  cache <- .trace_build_score_cache(MSdev::edata(ig), blocked_chemforms)
   score_mat <- matrix(0, n, n, dimnames = list(nodes, nodes))
   blocked_mat <- matrix(FALSE, n, n, dimnames = list(nodes, nodes))
   for (i in seq_len(n)) {
@@ -229,7 +244,7 @@
       if (i >= j) next
       sc <- .trace_pair_connection_score(
         ig, nodes[i], nodes[j],
-        blocked_chemforms, ppm.dyn, rt.tol.dyn, max_path_length
+        cache, ppm.dyn, rt.tol.dyn, max_path_length
       )
       score_mat[i, j] <- sc$score
       score_mat[j, i] <- sc$score
@@ -246,10 +261,19 @@
     as.character(min(as.numeric(ns)))
   }, character(1))
   assign.seed <- assign.seed[as.character(assign.group)]
+  # TRACE_net_score: best connection score from each node to any *other* member
+  # of its connectivity sub-network (this whole component). The diagonal
+  # self-term (score 1) is excluded. A single-node component has no partner and
+  # is handled by the n == 1 branch above (NA).
+  TRACE_net_score <- vapply(seq_len(n), function(i) {
+    partners <- seq_len(n)[-i]
+    max(score_mat[i, partners])
+  }, numeric(1))
   data.frame(
     name = nodes,
     assign.group = assign.group,
     assign.seed = assign.seed,
+    TRACE_net_score = TRACE_net_score,
     stringsAsFactors = FALSE
   )
 }
@@ -262,7 +286,7 @@
     i.pol,
     object,
     pol,
-    max_path_length = 6L,
+    max_path_length = 5L,
     connection_cutoff = 0.5) {
   tol <- .trace_dyn_tolerance(object, pol)
   blocked_chemforms <- .trace_ms_mass_diff_chemforms(i.pol)
