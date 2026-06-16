@@ -239,7 +239,72 @@ p <- plot_compare_pave_adduct(pave.trace.merged, object, i.pol = 0)
 open_plot_win(p, 5, 2.5)
 ```
 
-#### 2.3.3
+#### 2.3.3 Fragment compare
+
+show the features annotated as fragment in PAVE, but not in TRACE,
+
+1.  merge `pave_fragment >> trace_adduct` and `pave_fragment >> trace_metabolite` into one data.frame; one circular barplot (`geom_bar()` + `coord_polar()`) to show the adduct type in TRACE
+
+2.  for pave_fragment \>\> trace_metabolite, circular barplot (`geom_bar()` + `coord_polar()`) to show whether the feature was a candidate fragment in network assignment (check if `feature_id` is in `fg.net`). the legend title should be 'Fragment candidate', fill should be 'Re-assigned candidate' and 'Non candidate'.
+
+```{r}
+p <- plot_compare_pave_fragment(pave.trace.merged, object, i.pol = 0)
+open_plot_win(p, 5, 2.5)
+```
+
+#### 2.3.4. Graph compare
+
+plot the network assignment graph of TRACE and PAVE, and compare the difference.
+
+use the cache/demo1.rds to plot network:
+
+1.  p1 fill with TRACE metabolite group
+2.  p2 fill with PAVE metabolite group
+3.  for the metabolite group, if the seed is NA, assign distinct color to the node
+4.  add arg 'show_edge_label', for trace, its TRUE, for pave, its FALSE
+
+update 'plot_TRACE_network_split_demo':
+
+1.  the font should be "Arial" 2. the node label shoud like: "C26N1\nAdduct\n552.3309" (formula\ntype\nmz)
+
+```{r}
+demo <- TRACE_load_network_split_demo(demo_id = 1, cache_dir = "C:/Users/91879/OneDrive/Code/R/Package/TRACE/cache")
+nodes <- as.integer(igraph::V(demo$ig)$name)
+
+lab.df <- pave.trace.merged %>%
+  dplyr::filter(feature_id %in% nodes) %>%
+  dplyr::mutate(feature_id = as.character(feature_id))
+
+par(mfrow = c(1, 2), mar = c(1, 1, 2, 1), family = "Arial")
+
+# p1: color by TRACE metabolite group (seed_trace)
+plot_TRACE_network_split_demo(
+  demo,
+  show_edge_label = TRUE,
+  vertex_group = setNames(lab.df$seed_trace, lab.df$feature_id),
+  vertex_label_data = data.frame(
+    feature_id = lab.df$feature_id,
+    formula = lab.df$formula_trace,
+    type = lab.df$type_trace,
+    mz = lab.df$mz_trace,
+    stringsAsFactors = FALSE
+  )
+)
+
+# p2: color by PAVE metabolite group (pave_seed)
+plot_TRACE_network_split_demo(
+  demo,
+  show_edge_label = FALSE,
+  vertex_group = setNames(lab.df$pave_seed, lab.df$feature_id),
+  vertex_label_data = data.frame(
+    feature_id = lab.df$feature_id,
+    formula = lab.df$formula_pave,
+    type = lab.df$type_pave,
+    mz = lab.df$mz_pave,
+    stringsAsFactors = FALSE
+  )
+)
+```
 
 ### 3. note
 
