@@ -188,8 +188,10 @@ MSdev_save(object)
 
 }
 ```
+
 ### 2.2 Plot annotation change
-``` {r}
+
+```{r}
 p <- ggplot( pave.trace.merged,aes(x = type_trace,y = type_pave)) +
   geom_count(show.legend = FALSE )+
   scale_size(range = c(2,15),
@@ -211,29 +213,33 @@ open_plot_win(p,2.5,2.5)
 
 #### 2.3.1 CN dynamic filter
 
-pick all features annoated as non-blank in PAVE , but annotated as blank in TRACE, markerd as unmatched_blank. 
-pick all features annotated as non-blank in both TRACE and PAVE, markerd as matched_cn.
-extract all unmatched_blank and matched_cn's CN bundles from MSdev object:
-1. the bundle with seed as unmatched_blank/matched_cn should be extracted
-2. the mz error in each bundle should be extracted, and the max mz error should be calculated
-3. add arg 'mz_error', could be 'max' or 'mean', to control the mz error to be used
-and then plot:
-1. boxplot of the CN bundles' cor of unmatched_blank and matched_cn
-2. boxplot of the CN bundles' max mz error of unmatched_blank and matched_cn
+pick all features annoated as non-blank in PAVE , but annotated as blank in TRACE, markerd as unmatched_blank. pick all features annotated as non-blank in both TRACE and PAVE, markerd as matched_cn. extract all unmatched_blank and matched_cn's CN bundles from MSdev object: 1. the bundle with seed as unmatched_blank/matched_cn should be extracted 2. the mz error in each bundle should be extracted, and the max mz error should be calculated 3. add arg 'mz_error', could be 'max' or 'mean', to control the mz error to be used and then plot: 1. boxplot of the CN bundles' cor of unmatched_blank and matched_cn 2. boxplot of the CN bundles' max mz error of unmatched_blank and matched_cn
+
 ```{r}
 p <- plot_compare_pave_cn_bundle(pave.trace.merged, object, i.pol = 0,mz_error = "max")
 open_plot_win(p, 5, 2.5)
 ```
+
 #### 2.3.2 Adduct selection
 
 PAVE select M+/-H as metabolites and others as adduct, but TRACE pick the max_intensity feature in a CN group as the seed and annotate it with the formula, and then annotate other features in the same CN group as adducts. So the adduct selection is different between these two methods. We can compare the adduct selection by comparing the adduct annotation of features in the same CN group.
-extract all these features' information:
-1. features groupped as M/M, M/A, A/M, A/A in PAVE and TRACE
-2. intensity of each features
-plot: 
-1. barplot to show adduct type distribution of TRACE and PAVE, all of PAVE as M-H, and TRACE use the trace annotation
-2. box plot to show the four group's intensity distribution in TRACE and PAVE, x is the group, y is the intensity, color is the group
 
+extract all these features' information:
+
+1.  features groupped as M/M, M/A, A/M, A/A in PAVE and TRACE
+2.  intensity of each features
+
+plot:
+
+1.  barplot to show adduct type distribution of TRACE and PAVE, all of PAVE as M-H, and TRACE use the trace annotation. plot in one figure, two columns, one for TRACE, one for PAVE, the type of adduct should stocked in the bar.
+2.  box plot to show the four group's intensity distribution in TRACE and PAVE, x is the group, y is the intensity, color is the group, the x axis title should be 'TRACE/PAVE'
+
+```{r}
+p <- plot_compare_pave_adduct(pave.trace.merged, object, i.pol = 0)
+open_plot_win(p, 5, 2.5)
+```
+
+#### 2.3.3
 
 ### 3. note
 

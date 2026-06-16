@@ -195,3 +195,223 @@ plot_compare_pave_cn_bundle <- function(
 
   p.all
 }
+
+#' Map PAVE annotation to metabolite (M) or adduct (A)
+#' @noRd
+.compare_pave_ma_pave <- function(type_pave) {
+  dplyr::case_when(
+    type_pave == "Metabolite" ~ "M",
+    type_pave %in% c("Adduct", "Fragment", "Isotope", "Dimer", "Multicharge", "Low_c", "Low_score") ~ "A",
+    TRUE ~ NA_character_
+  )
+}
+
+#' Map TRACE annotation to metabolite (M) or adduct (A)
+#' @noRd
+.compare_pave_ma_trace <- function(type_trace) {
+  dplyr::case_when(
+    tolower(type_trace) == "metabolite" ~ "M",
+    tolower(type_trace) == "adduct" ~ "A",
+    TRUE ~ NA_character_
+  )
+}
+
+#' Default protonated adduct label for PAVE barplots
+#' @noRd
+.compare_pave_default_adduct <- function(i.pol = 0) {
+  if (i.pol == 0) "[M-H]-" else "[M+H]+"
+}
+
+#' Feature intensity from xcms labeled samples
+#' @noRd
+.compare_pave_feature_intensity <- function(object, i.pol = 0) {
+  pol <- .trace_get_pol(i.pol)
+  xcms.xcms <- object@xcmsData[[paste0(pol, "MS1")]]
+  if (is.null(xcms.xcms)) {
+    stop("xcms data not found for polarity ", pol, ".")
+  }
+
+  xcms.val <- xcms::featureValues(xcms.xcms, missing = 0, value = "maxo")
+  sample.types <- c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
+  sample.idx <- Biobase::pData(xcms.xcms)$sample.type %in% sample.types
+  if (!any(sample.idx)) {
+    stop("No labeled sample groups found in xcms metadata.")
+  }
+
+  stats::setNames(
+    rowMeans(xcms.val[, sample.idx, drop = FALSE], na.rm = TRUE),
+    as.character(seq_len(nrow(xcms.val)))
+  )
+}
+
+#' Build PAVE vs TRACE adduct selection comparison data
+#'
+#' For features in the same TRACE CN group (`seed_trace`), classify each
+#' feature as `M/M`, `M/A`, `A/M`, or `A/A` based on TRACE and PAVE metabolite
+#' versus adduct annotation (`TRACE/PAVE`).
+#'
+#' @param pave.trace.merged Data frame from a PAVE/TRACE feature merge.
+#' @param object MSdev object with xcms results.
+#' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#'
+#' @returns A data frame with CN-group features, `ma_group`, adduct labels, and
+#'   `intensity`.
+#' @export
+compare_pave_adduct_data <- function(pave.trace.merged, object, i.pol = 0) {
+  intensity <- .compare_pave_feature_intensity(object, i.pol = i.pol)
+  pave_adduct <- .compare_pave_default_adduct(i.pol = i.pol)
+
+  pave.trace.merged %>%
+    dplyr::filter(
+      !is.na(seed_trace),
+      seed_trace != "",
+      !is.na(type_trace),
+      type_trace != "",
+      type_trace != "Blank/noise"
+    ) %>%
+    dplyr::mutate(
+      pave_ma = .compare_pave_ma_pave(type_pave),
+      trace_ma = .compare_pave_ma_trace(type_trace),
+      ma_group = dplyr::if_else(
+        is.na(pave_ma) | is.na(trace_ma),
+        NA_character_,
+        paste0(trace_ma, "/", pave_ma)
+      ),
+      intensity = as.numeric(intensity[as.character(feature_id)]),
+      pave_adduct = pave_adduct,
+      trace_adduct = as.character(adduct)
+    ) %>%
+    dplyr::filter(!is.na(ma_group)) %>%
+    dplyr::mutate(
+      ma_group = factor(
+        ma_group,
+        levels = c("M/M", "M/A", "A/M", "A/A")
+      )
+    )
+}
+
+#' Adduct type counts for PAVE and TRACE barplots
+#'
+#' @param adduct.df Output of [compare_pave_adduct_data()].
+#'
+#' @returns A data frame with columns `source`, `adduct`, and `n`.
+#' @export
+compare_pave_adduct_distribution <- function(adduct.df) {
+  pave.dist <- adduct.df %>%
+    dplyr::count(pave_adduct, name = "n") %>%
+    dplyr::transmute(
+      source = "PAVE",
+      adduct = pave_adduct,
+      n = n
+    )
+
+  trace.dist <- adduct.df %>%
+    dplyr::mutate(
+      trace_adduct = dplyr::coalesce(
+        dplyr::na_if(trace_adduct, ""),
+        pave_adduct
+      )
+    ) %>%
+    dplyr::count(trace_adduct, name = "n") %>%
+    dplyr::transmute(
+      source = "TRACE",
+      adduct = trace_adduct,
+      n = n
+    )
+
+  dplyr::bind_rows(pave.dist, trace.dist) %>%
+    dplyr::mutate(
+      source = factor(source, levels = c("PAVE", "TRACE")),
+      adduct = factor(adduct)
+    )
+}
+
+#' Plot PAVE vs TRACE adduct selection comparison
+#'
+#' @param pave.trace.merged Data frame from a PAVE/TRACE feature merge.
+#' @param object MSdev object with xcms results.
+#' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#' @param top.trace.adducts Maximum number of TRACE adduct labels to show.
+#' @param return.data Logical. If `TRUE`, return a list with `plot`, `p_adduct`,
+#'   `p_intensity`, `data`, and `adduct_distribution`.
+#'
+#' @returns A patchwork object with a stacked adduct barplot (PAVE and TRACE
+#'   columns) and an intensity boxplot, or a list when `return.data = TRUE`.
+#' @export
+plot_compare_pave_adduct <- function(
+    pave.trace.merged,
+    object,
+    i.pol = 0,
+    top.trace.adducts = 10L,
+    return.data = FALSE) {
+  adduct.df <- compare_pave_adduct_data(
+    pave.trace.merged = pave.trace.merged,
+    object = object,
+    i.pol = i.pol
+  )
+  adduct.dist <- compare_pave_adduct_distribution(adduct.df)
+
+  trace.top <- adduct.dist %>%
+    dplyr::filter(source == "TRACE") %>%
+    dplyr::slice_max(n, n = top.trace.adducts, with_ties = FALSE) %>%
+    dplyr::pull(adduct) %>%
+    as.character()
+
+  adduct.dist.plot <- adduct.dist %>%
+    dplyr::mutate(
+      adduct_plot = dplyr::case_when(
+        source == "PAVE" ~ as.character(adduct),
+        adduct %in% trace.top ~ as.character(adduct),
+        TRUE ~ "Other"
+      )
+    ) %>%
+    dplyr::group_by(source, adduct_plot) %>%
+    dplyr::summarise(n = sum(n), .groups = "drop") %>%
+    dplyr::mutate(
+      source = factor(source, levels = c("PAVE", "TRACE")),
+      adduct_plot = factor(adduct_plot)
+    )
+
+  p.adduct <- ggplot2::ggplot(
+    adduct.dist.plot,
+    ggplot2::aes(x = source, y = n, fill = adduct_plot)
+  ) +
+    ggplot2::geom_col(position = "stack", width = 0.6, colour = "white", linewidth = 0.2) +
+    ggplot2::labs(x = NULL, y = "Count", fill = "Adduct") +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(
+      legend.position = "right",
+      legend.key.size = grid::unit(0.15, "inch"),
+      legend.text = ggplot2::element_text(size = 5)
+    )
+
+  p.intensity <- adduct.df %>%
+    dplyr::filter(is.finite(intensity), intensity > 0) %>%
+    ggplot2::ggplot(ggplot2::aes(x = ma_group, y = intensity, fill = ma_group, color = ma_group)) +
+    ggplot2::geom_boxplot(
+      outlier.size = 0.4,
+      linewidth = 0.3,
+      alpha = 0.4,
+      show.legend = FALSE
+    ) +
+    ggplot2::geom_jitter(width = 0.15, alpha = 0.35, size = 0.3, show.legend = FALSE) +
+    ggplot2::scale_y_log10() +
+    ggplot2::labs(x = "TRACE/PAVE", y = "Intensity") +
+    ggplot2::theme_bw(base_size = 6)
+
+  p.all <- p.adduct + p.intensity +
+    patchwork::plot_layout(widths  = c(1.2, 1))
+
+  if (return.data) {
+    return(list(
+      plot = p.all,
+      p_adduct = p.adduct,
+      p_intensity = p.intensity,
+      data = adduct.df,
+      adduct_distribution = adduct.dist
+    ))
+  }
+
+  p.all
+}
+
