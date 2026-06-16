@@ -415,3 +415,199 @@ plot_compare_pave_adduct <- function(
   p.all
 }
 
+#' Circular barplot from a count table using ggplot2
+#' @noRd
+.compare_pave_polar_barplot <- function(count.df, title = NULL) {
+  if (!nrow(count.df)) {
+    return(
+      ggplot2::ggplot() +
+        ggplot2::annotate("text", x = 0, y = 0, label = "No data", size = 3) +
+        ggplot2::labs(title = title) +
+        ggplot2::theme_void(base_size = 6)
+    )
+  }
+
+  count.df <- count.df[order(-count.df$n), , drop = FALSE]
+  count.df$label <- factor(count.df$label, levels = count.df$label)
+
+  ggplot2::ggplot(count.df, ggplot2::aes(x = 1, y = n, fill = label)) +
+    ggplot2::geom_bar(
+      stat = "identity",
+      position = "stack",
+      width = 0.8,
+      color = "white",
+      linewidth = 0.2
+    ) +
+    ggplot2::coord_polar(theta = "y") +
+    ggplot2::labs(title = title, x = NULL, y = NULL, fill = NULL) +
+    ggplot2::theme_void(base_size = 6) +
+    ggplot2::theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = ggplot2::element_blank(),
+      axis.ticks.x = ggplot2::element_blank(),
+      legend.position = "bottom",
+      legend.key.size = grid::unit(0.12, "inch"),
+      legend.text = ggplot2::element_text(size = 4)
+    )
+}
+
+#' Build PAVE fragment vs TRACE annotation comparison data
+#'
+#' Selects features annotated as fragment in PAVE but not in TRACE, then
+#' summarizes TRACE adduct labels and fragment-network candidacy in `fg.net`.
+#'
+#' @param pave.trace.merged Data frame from a PAVE/TRACE feature merge.
+#' @param object MSdev object with TRACE results in `object@advancedAna$TRACE_temp`.
+#' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#'
+#' @returns A list with `all`, `trace_adduct`, `trace_metabolite`, and merged
+#'   `trace_adduct_metabolite` data frames.
+#' @export
+compare_pave_fragment_data <- function(pave.trace.merged, object, i.pol = 0) {
+  pol <- .trace_get_pol(i.pol)
+  fg.net <- object@advancedAna$TRACE_temp[[pol]]$fg.net
+  if (is.null(fg.net) || !nrow(fg.net)) {
+    stop(
+      "fg.net not found in object@advancedAna$TRACE_temp$", pol,
+      ". Run TRACE_workflow() first."
+    )
+  }
+
+  fg.ids <- unique(c(
+    as.integer(fg.net$from),
+    as.integer(fg.net$to)
+  ))
+  pave_adduct <- .compare_pave_default_adduct(i.pol = i.pol)
+
+  frag.df <- pave.trace.merged %>%
+    dplyr::filter(
+      type_pave == "Fragment",
+      is.na(type_trace) | type_trace != "Fragment"
+    ) %>%
+    dplyr::mutate(
+      trace_adduct = dplyr::coalesce(
+        dplyr::na_if(as.character(adduct), ""),
+        pave_adduct
+      ),
+      in_fg_net = feature_id %in% fg.ids,
+      fg_net_status = dplyr::if_else(
+        in_fg_net,
+        "In fg.net",
+        "Not in fg.net"
+      )
+    )
+
+  list(
+    all = frag.df,
+    trace_adduct = frag.df %>%
+      dplyr::filter(tolower(type_trace) == "adduct"),
+    trace_metabolite = frag.df %>%
+      dplyr::filter(tolower(type_trace) == "metabolite"),
+    trace_adduct_metabolite = frag.df %>%
+      dplyr::filter(tolower(type_trace) %in% c("adduct", "metabolite")) %>%
+      dplyr::mutate(
+        trace_group = dplyr::if_else(
+          tolower(type_trace) == "adduct",
+          "TRACE adduct",
+          "TRACE metabolite"
+        )
+      )
+  )
+}
+
+#' Summarize TRACE adduct counts for polar barplots
+#' @noRd
+.compare_pave_trace_adduct_count <- function(df, top.trace.adducts = 8L) {
+  count.df <- df %>%
+    dplyr::count(trace_adduct, name = "n") %>%
+    dplyr::arrange(dplyr::desc(n))
+
+  if (!nrow(count.df)) {
+    return(data.frame(label = character(), n = integer(), stringsAsFactors = FALSE))
+  }
+
+  if (nrow(count.df) > top.trace.adducts) {
+    top.labels <- count.df$trace_adduct[seq_len(top.trace.adducts)]
+    count.df <- count.df %>%
+      dplyr::mutate(
+        label = dplyr::if_else(trace_adduct %in% top.labels, trace_adduct, "Other")
+      ) %>%
+      dplyr::group_by(label) %>%
+      dplyr::summarise(n = sum(n), .groups = "drop")
+  } else {
+    count.df$label <- count.df$trace_adduct
+  }
+
+  count.df
+}
+
+#' Plot PAVE fragment vs TRACE annotation comparison
+#'
+#' @param pave.trace.merged Data frame from a PAVE/TRACE feature merge.
+#' @param object MSdev object with TRACE results in `object@advancedAna$TRACE_temp`.
+#' @param i.pol Polarity index. `0` for negative and `1` for positive.
+#' @param top.trace.adducts Maximum number of TRACE adduct labels to show in
+#'   each polar barplot.
+#' @param return.data Logical. If `TRUE`, return a list with plots and data.
+#'
+#' @returns A patchwork object with one polar barplot of TRACE adduct type from
+#'   merged `trace_adduct_metabolite` features and one polar barplot of
+#'   `fg.net` candidacy for `trace_metabolite`, or a list when `return.data`
+#'   is `TRUE`.
+#' @export
+plot_compare_pave_fragment <- function(
+    pave.trace.merged,
+    object,
+    i.pol = 0,
+    top.trace.adducts = 8L,
+    return.data = FALSE) {
+  frag.data <- compare_pave_fragment_data(
+    pave.trace.merged = pave.trace.merged,
+    object = object,
+    i.pol = i.pol
+  )
+
+  adduct.count <- .compare_pave_trace_adduct_count(
+    frag.data$trace_adduct_metabolite,
+    top.trace.adducts = top.trace.adducts
+  )
+  fg.net.count <- frag.data$trace_metabolite %>%
+    dplyr::count(fg_net_status, name = "n") %>%
+    dplyr::mutate(
+      label = dplyr::case_when(
+        fg_net_status == "In fg.net" ~ "Re-assigned candidate",
+        fg_net_status == "Not in fg.net" ~ "Non candidate",
+        TRUE ~ as.character(fg_net_status)
+      ),
+      label = factor(label, levels = c("Re-assigned candidate", "Non candidate"))
+    )
+
+  p.adduct <- .compare_pave_polar_barplot(
+    adduct.count,
+    title = "PAVE fragment >> TRACE adduct / metabolite"
+  )
+
+  p.metabolite.fg <- .compare_pave_polar_barplot(
+    fg.net.count,
+    title = "PAVE fragment >> TRACE metabolite"
+  ) +
+    ggplot2::labs(fill = "Fragment candidate")
+
+  p.all <- p.adduct + p.metabolite.fg +
+    patchwork::plot_layout(width = c(1, 1))
+
+  if (return.data) {
+    return(list(
+      plot = p.all,
+      p_adduct = p.adduct,
+      p_metabolite_fg = p.metabolite.fg,
+      data = frag.data,
+      trace_adduct_metabolite = frag.data$trace_adduct_metabolite,
+      adduct_count = adduct.count,
+      fg_net_count = fg.net.count
+    ))
+  }
+
+  p.all
+}
+
