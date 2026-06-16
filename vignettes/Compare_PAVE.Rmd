@@ -15,7 +15,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-### Data set
+## 1. Data set
 
 Example LC-MS data from PAVE: [Google Drive download](https://drive.google.com/open?id=1C7gwniCSwdk2Povc0KpA_BBLbuCkzMRo)
 
@@ -25,7 +25,7 @@ raw.data.dir <- "C:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PA
 dir(raw.data.dir)
 ```
 
-### Load data to MSdev object
+### 1.1 Load data to MSdev object
 
 ```{r}
 library(TRACE)
@@ -38,7 +38,7 @@ object <- MSdev_load("C:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.
 object@sampleInfo
 ```
 
-### Set sample information and parameters
+### 1.2 Set sample information and parameters
 
 ```{r}
 #object <- MSdev_checkSampleInfo(object)
@@ -60,34 +60,38 @@ object <- MSdev_set_param(
         ppm = 5))
 ```
 
-### Extract peaks and group peaks using xcms
+### 1.3 Extract peaks and group peaks using xcms
 
 ```{r}
 #object <- MSdev_xcmsProcessing(object)
 #object@xcmsData
 
 MSdev_save(object)
-TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx")
+
 ```
 
-### TRACE analysis
+### 1.4 TRACE analysis
 
 ```{r}
 #object <- TRACE_workflow(object)
-#MSdev_save(object)
+TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx")
+MSdev_save(object)
 ```
 
-### result 
+## 2. Result compare
+
+### 2.1 Merge data
+
 ```{r}
 {
   library(dplyr)
 
   pave.file <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"
-  trace.file <- "d:/temp/TRACE.xlsx"
-  trace.sheet <- "AllFeatures_Negative"
+  trace.file <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx"
+
 
   pave.df.raw <- openxlsx::read.xlsx(pave.file)
-  trace.df.raw <-  openxlsx::read.xlsx(  trace.file,sheet = trace.sheet )
+  trace.df.raw <-  openxlsx::read.xlsx(  trace.file,sheet = 1 )
   pave.df <- pave.df.raw %>%
     dplyr::mutate(
       feature_id = as.integer(gsub("[^0-9]+", "", feature_id)),
@@ -110,13 +114,12 @@ TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/
       formula_pave,
       type_pave,
       score_pave,
-      pave_cn
+      pave_cn,
+      pave_seed,
+      isotope
     )
 
-  trace.df <- openxlsx::read.xlsx(
-    trace.file,
-    sheet = trace.sheet
-  ) %>%
+  trace.df <- trace.df.raw %>%
     dplyr::mutate(
       feature_id = as.integer(feature_id),
       formula_trace = as.character(TRACE_formula),
@@ -134,19 +137,23 @@ TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/
       formula_trace,
       type_trace,
       seed_trace,
-      trace_cn
+      trace_cn,
+      TRACE_cor,
+      TRACE_net_score,
+      TRACE_anno_score,
+      adduct = compound.adduct,
+      TRACE_fragment,
+      TRACE_isotope
     )
 
-  ratio.df <- tryCatch(
-    openxlsx::read.xlsx(
-      trace.file
-    ),
-    error = function(e) NULL
-  )
+ 
 
+  library(stringr)
   pave.trace.merged <- dplyr::full_join(pave.df, trace.df, by = "feature_id") %>%
     dplyr::mutate(
       type_pave = if_else(is.na(type_pave),"blank/noise",type_pave),
+      type_pave = str_to_sentence(type_pave),
+      type_trace = str_to_sentence(type_trace),
       cn_match = trace_cn &
         pave_cn &
         !is.na(formula_trace) &
@@ -160,19 +167,8 @@ TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/
       )
     )
 
-  if (!is.null(ratio.df) && all(c("TRACE_seed", "TRACE_cor") %in% names(ratio.df))) {
-    trace.cor.map <- stats::setNames(ratio.df$TRACE_cor, as.character(ratio.df$TRACE_seed))
-    pave.trace.merged$trace_cor <- as.numeric(
-      trace.cor.map[as.character(pave.trace.merged$seed_trace)]
-    )
-  } else {
-    pave.trace.merged$trace_cor <- NA_real_
-  }
-  pave.trace.merged$trace_cor <- ifelse(
-    is.finite(pave.trace.merged$trace_cor),
-    pave.trace.merged$trace_cor,
-    pave.trace.merged$score_pave
-  )
+
+
 
   pave.trace.merged <- pave.trace.merged %>%
     dplyr::select(
@@ -181,39 +177,65 @@ TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/
       formula_trace,
       type_pave,
       type_trace,
-      score_pave,
-      trace_cor,
-      pave_cn,
-      trace_cn,
-      cn_match,
-      cn_assignment,
-      mz_pave,
-      rt_pave,
-      mz_trace,
-      rt_trace,
-      seed_trace
+      everything()
     ) %>%
-    dplyr::arrange(feature_id)
+    dplyr::arrange(
+      type_pave,
+      type_trace)
 
 
-  ggplot(pave.trace.merged,aes(x = type_trace,y = type_pave))+
-    geom_count()+
-    scale_size(range = c(1,20),
-               transform = "sqrt")+
-    stat_sum(
-      aes(label = after_stat(n)),
-      geom = "text",
-      color = "white",
-      size = 3.5,
-      show.legend = FALSE
-    )
 
 
 }
 ```
+### 2.2 Plot annotation change
+``` {r}
+p <- ggplot( pave.trace.merged,aes(x = type_trace,y = type_pave)) +
+  geom_count(show.legend = FALSE )+
+  scale_size(range = c(2,15),
+             transform = "sqrt") +
+  stat_sum(
+    aes(label = after_stat(n) ) ,
+    geom = "text",
+    color = "white",
+    size = 2,
+    show.legend = FALSE
+  )+
+  labs(x = "TRACE annotation", y = "PAVE annotation")+
+  theme_bw(base_size = 6)
+
+open_plot_win(p,2.5,2.5)
+```
+
+### 2.3 Annotation change composition
+
+#### 2.3.1 CN dynamic filter
+
+pick all features annoated as non-blank in PAVE , but annotated as blank in TRACE, markerd as unmatched_blank. 
+pick all features annotated as non-blank in both TRACE and PAVE, markerd as matched_cn.
+extract all unmatched_blank and matched_cn's CN bundles from MSdev object:
+1. the bundle with seed as unmatched_blank/matched_cn should be extracted
+2. the mz error in each bundle should be extracted, and the max mz error should be calculated
+3. add arg 'mz_error', could be 'max' or 'mean', to control the mz error to be used
+and then plot:
+1. boxplot of the CN bundles' cor of unmatched_blank and matched_cn
+2. boxplot of the CN bundles' max mz error of unmatched_blank and matched_cn
+```{r}
+p <- plot_compare_pave_cn_bundle(pave.trace.merged, object, i.pol = 0,mz_error = "max")
+open_plot_win(p, 5, 2.5)
+```
+#### 2.3.2 Adduct selection
+
+PAVE select M+/-H as metabolites and others as adduct, but TRACE pick the max_intensity feature in a CN group as the seed and annotate it with the formula, and then annotate other features in the same CN group as adducts. So the adduct selection is different between these two methods. We can compare the adduct selection by comparing the adduct annotation of features in the same CN group.
+extract all these features' information:
+1. features groupped as M/M, M/A, A/M, A/A in PAVE and TRACE
+2. intensity of each features
+plot: 
+1. barplot to show adduct type distribution of TRACE and PAVE, all of PAVE as M-H, and TRACE use the trace annotation
+2. box plot to show the four group's intensity distribution in TRACE and PAVE, x is the group, y is the intensity, color is the group
 
 
-
+### 3. note
 
 ### Compare PAVE and TRACE result
 
