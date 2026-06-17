@@ -191,7 +191,6 @@ MSdev_save(object)
 
 ### 2.2 Plot annotation change
 
-
 #### 2.2.1 Annotation change summary
 
 ```{r}
@@ -217,16 +216,14 @@ open_plot_win(p, 2.2, 2)
 
 #### 2.2.2 CN formula matched ratio
 
-compare the CN formula matched ratio of TRACE and PAVE, the ratio is the number of features annotated as CN formula in TRACE divided by the number of features annotated as CN formula in PAVE. only metabolite and adduct features are considered.
-use a stack bar plot like :
-|PAVE|OVERLAP|TRACE|
+compare the CN formula matched ratio of TRACE and PAVE, the ratio is the number of features annotated as CN formula in TRACE divided by the number of features annotated as CN formula in PAVE. only metabolite and adduct features are considered. use a stack bar plot like : \|PAVE\|OVERLAP\|TRACE\|
 
 ```{r}
 res <- .compare_pave_cn_match_ratio_plot(
   pave.trace.merged,
-  types = c("Metabolite", "Adduct")
+  types = c("Metabolite", "Adduct")#,"Fragment","Isotope")
 )
-open_plot_win(res$plot, 5, 1.8)
+open_plot_win(res$plot, 1.5, 2)
 ```
 
 #### 2.2.3 False positive
@@ -268,7 +265,7 @@ extract all these features' information:
 plot:
 
 1.  barplot to show adduct type distribution of TRACE and PAVE, all of PAVE as M-H, and TRACE use the trace annotation. plot in one figure, two columns, one for TRACE, one for PAVE, the type of adduct should stocked in the bar.
-2.  box plot to show the four group's intensity distribution in TRACE and PAVE, x is the group, y is the intensity, color is the group, the x axis title should be 'TRACE/PAVE'
+2.  box plot to show the four group's intensity distribution in TRACE and PAVE, x is the group, y is the intensity, color is the group, the x axis title should be 'PAVE/TRACE'
 
 ```{r}
 p <- plot_compare_pave_adduct(pave.trace.merged, object, i.pol = 0)

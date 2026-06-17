@@ -396,7 +396,7 @@ plot_compare_pave_adduct <- function(
     ) +
     ggplot2::geom_jitter(width = 0.15, alpha = 0.35, size = 0.3, show.legend = FALSE) +
     ggplot2::scale_y_log10() +
-    ggplot2::labs(x = "TRACE/PAVE", y = "Intensity") +
+    ggplot2::labs(x = "PAVE/TRACE", y = "Intensity") +
     ggplot2::theme_bw(base_size = 6)
 
   p.all <- p.adduct + p.intensity +
@@ -464,19 +464,19 @@ plot_compare_pave_adduct <- function(
   cn.df$trace_cn <- !is.na(cn.df$trace_cn) & cn.df$trace_cn
   cn.df$cn_match <- !is.na(cn.df$cn_match) & cn.df$cn_match
 
-  n_pave_cn <- sum(cn.df$pave_cn, na.rm = TRUE)
-  n_trace_cn <- sum(cn.df$trace_cn, na.rm = TRUE)
-  n_overlap <- sum(cn.df$cn_match, na.rm = TRUE)
+  n_pave_cn <- sum(cn.df$cn_assignment == "PAVE_only", na.rm = TRUE)
+  n_trace_cn <- sum(cn.df$cn_assignment  == "TRACE_only", na.rm = TRUE)
+  n_overlap <- sum(cn.df$cn_assignment  == "both",  na.rm = TRUE)
 
   stack.df <- data.frame(
     part = factor(
-      c("PAVE", "OVERLAP", "TRACE"),
-      levels = c("PAVE", "OVERLAP", "TRACE")
+      c("PAVE", "Overelap", "TRACE"),
+      levels = c("PAVE", "Overelap", "TRACE")
     ),
     n = c(
-      sum(cn.df$pave_cn & !cn.df$cn_match, na.rm = TRUE),
+      n_pave_cn,
       n_overlap,
-      sum(cn.df$trace_cn & !cn.df$cn_match, na.rm = TRUE)
+      n_trace_cn
     ),
     stringsAsFactors = FALSE
   )

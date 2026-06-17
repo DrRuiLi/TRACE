@@ -123,9 +123,15 @@
   raw_mat <- MSCC::chemform_parse(all_cds)
   # Strip isotope columns: fold their counts into the base element columns so
   # net-path comparison is on a simplified (non-isotope) element basis.
-  iso_names <- colnames(raw_mat)[MSdev:::is.isotope(colnames(raw_mat))]
+  is_isotope_name <- function(x) {
+    grepl("^\\[[0-9]+\\]", x)
+  }
+  get_uniso_name <- function(x) {
+    sub("^\\[[0-9]+\\]", "", x)
+  }
+  iso_names <- colnames(raw_mat)[is_isotope_name(colnames(raw_mat))]
   if (length(iso_names)) {
-    base_names <- MSdev:::get_ele_uniso(iso_names)
+    base_names <- get_uniso_name(iso_names)
     missing_base <- setdiff(unique(base_names), colnames(raw_mat))
     if (length(missing_base)) {
       add <- matrix(0, nrow(raw_mat), length(missing_base),
@@ -135,7 +141,7 @@
     for (k in seq_along(iso_names)) {
       raw_mat[, base_names[k]] <- raw_mat[, base_names[k]] + raw_mat[, iso_names[k]]
     }
-    raw_mat <- raw_mat[, !MSdev:::is.isotope(colnames(raw_mat)), drop = FALSE]
+    raw_mat <- raw_mat[, !is_isotope_name(colnames(raw_mat)), drop = FALSE]
   }
   rownames(raw_mat) <- all_cds
   # identify which rows correspond to blocked chemforms
@@ -308,4 +314,84 @@
   assign_df$conn.component <- conn_comp[assign_df$name]
   assign_df$assign.group <- paste0(assign_df$conn.component, ".", assign_df$assign.group)
   assign_df
+}
+
+#' Recompute path-compatibility score matrix for one component
+#'
+#' This is a debugging/inspection helper that reproduces the internal
+#' `score_mat` and `blocked_mat` used to derive `assign.group` within a
+#' connectivity component (`conn.component`).
+#'
+#' @param object MSdev object with TRACE network assignment results.
+#' @param i.pol Polarity index (`0` = negative, `1` = positive).
+#' @param conn.component Numeric connectivity component id (e.g. `638`).
+#' @param max_path_length Maximum simple path length used when scoring (default `5`).
+#' @param connection_cutoff Compatibility cutoff used to build the adjacency matrix (default `0.5`).
+#'
+#' @return A list with `nodes`, `assign` (subset of `cn.seed.assign`),
+#'   `score_mat`, `blocked_mat`, `ppm.dyn`, `rt.tol.dyn`, `connection_cutoff`,
+#'   and `max_path_length`.
+#' @export
+TRACE_score_mat_component <- function(
+    object,
+    i.pol = 0L,
+    conn.component,
+    max_path_length = 5L,
+    connection_cutoff = 0.5) {
+  pol <- .trace_get_pol(i.pol)
+  assign <- .trace_get_temp(object, pol, "cn.seed.assign")
+  ig_full <- .trace_get_temp(object, pol, "cn.seed.ig.full")
+  if (is.null(assign) || !nrow(assign) || is.null(ig_full)) {
+    stop("Missing TRACE network assignment results in TRACE_temp for ", pol, ".")
+  }
+  if (missing(conn.component) || length(conn.component) != 1L) {
+    stop("`conn.component` must be a single value.")
+  }
+  conn.component <- as.numeric(conn.component)
+  sub_assign <- assign[assign$conn.component == conn.component, , drop = FALSE]
+  if (!nrow(sub_assign)) {
+    stop("No nodes found for conn.component = ", conn.component, " (", pol, ").")
+  }
+  nodes <- as.character(sub_assign$name)
+  ig <- MSdev::igraph_filter_vertex(ig_full, nodes)
+
+  tol <- .trace_dyn_tolerance(object, pol)
+  blocked_chemforms <- .trace_ms_mass_diff_chemforms(i.pol)
+  cache <- .trace_build_score_cache(MSdev::edata(ig), blocked_chemforms)
+
+  n <- length(nodes)
+  score_mat <- matrix(0, n, n, dimnames = list(nodes, nodes))
+  blocked_mat <- matrix(FALSE, n, n, dimnames = list(nodes, nodes))
+  for (i in seq_len(n)) {
+    score_mat[i, i] <- 1
+    for (j in seq_len(n)) {
+      if (i >= j) next
+      sc <- .trace_pair_connection_score(
+        ig,
+        from = nodes[i],
+        to = nodes[j],
+        cache = cache,
+        ppm.dyn = tol$ppm.dyn,
+        rt.tol.dyn = tol$rt.tol.dyn,
+        max_path_length = max_path_length
+      )
+      score_mat[i, j] <- sc$score
+      score_mat[j, i] <- sc$score
+      blocked_mat[i, j] <- sc$blocked
+      blocked_mat[j, i] <- sc$blocked
+    }
+  }
+
+  list(
+    polarity = pol,
+    conn.component = conn.component,
+    nodes = nodes,
+    assign = sub_assign,
+    score_mat = score_mat,
+    blocked_mat = blocked_mat,
+    ppm.dyn = tol$ppm.dyn,
+    rt.tol.dyn = tol$rt.tol.dyn,
+    connection_cutoff = connection_cutoff,
+    max_path_length = max_path_length
+  )
 }

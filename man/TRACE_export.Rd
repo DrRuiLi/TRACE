@@ -19,7 +19,9 @@ Invisibly, the output file path.
 }
 \description{
 Writes TRACE results to an Excel workbook, including one sheet per polarity
-with **all xcms features** and their TRACE annotations (if present).
-Additional sheets include the raw TRACE annotation tables and (when
-available) CN labelling-ratio outputs from `object@advancedAna$TRACE_temp`.
+with **all xcms features** and their TRACE annotations (if present),
+including `type`, `TRACE_fragment`, `TRACE_isotope`, `TRACE_cor`,
+`TRACE_net_score`, and `TRACE_anno_score` when available. Additional sheets include the raw TRACE annotation tables
+and (when available) CN labelling-ratio outputs from
+`object@advancedAna$TRACE_temp`.
 }

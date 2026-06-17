@@ -964,19 +964,22 @@ get_adduct_mass_diff <- function(polarity = 0,direction = 1){
 
   pol <- ifelse(polarity==1,"positive","negative")
 
-  adduct.table <- MSCC::adduct.table%>%
-    dplyr::filter( Ion_mode == pol,
-                   Multi  == 1, abs(Charge     )==1)%>%
-    dplyr::mutate(m_c = Multi/Charge)
+  adduct.table <- MSCC::adduct.table |>
+    dplyr::filter(
+      Ion_mode == pol,
+      Multi == 1,
+      abs(Charge) == 1
+    ) |>
+    dplyr::mutate(m_c = Multi / Charge)
 
 
   adduct.diff <- expand.grid(
     adduct.from = 1:nrow(adduct.table),
     adduct.to = 1:nrow(adduct.table)
-  )%>%
+  ) |>
     dplyr::filter(
       adduct.table$m_c[adduct.from] == adduct.table$m_c[adduct.to]
-    )%>%
+    ) |>
     dplyr::mutate(
       chemform_diff = MSCC::chemform_calc(adduct.table$Formula_diff[adduct.to],
                                           adduct.table$Formula_diff[adduct.from],
@@ -1005,16 +1008,18 @@ get_iso_mass_diff <- function(){
                "[37]Cl","[81]Br"
   )
 
-  ele <- MSCC::elem_table%>%
-    dplyr::mutate(ele.base = MSdev:::get_ele_uniso(element))%>%
-    dplyr::group_by(ele.base)%>%
-    dplyr::filter(any(element %in% iso.ele))%>%
-    dplyr::arrange(mass)%>%
-    dplyr::mutate(chemform_diff = paste0(element,"1",element[1],"-1"),
-                  mass_diff = MSCC::chemform_mz(chemform_diff))%>%
-    dplyr::ungroup()%>%
-    dplyr::filter(mass_diff!=0)%>%
-    dplyr::select("element","chemform_diff","mass_diff")
+  ele <- MSCC::elem_table |>
+    dplyr::mutate(ele.base = MSdev:::get_ele_uniso(element)) |>
+    dplyr::group_by(ele.base) |>
+    dplyr::filter(any(element %in% iso.ele)) |>
+    dplyr::arrange(mass) |>
+    dplyr::mutate(
+      chemform_diff = paste0(element, "1", element[1], "-1"),
+      mass_diff = MSCC::chemform_mz(chemform_diff)
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::filter(mass_diff != 0) |>
+    dplyr::select("element", "chemform_diff", "mass_diff")
 
   data.table::as.data.table(ele)
 
@@ -1025,10 +1030,51 @@ get_iso_mass_diff <- function(){
 #' @import data.table
 get_fragment_mass_diff <- function(){
 
-  data.table::data.table(chemform_diff = c(
+  fragment.formula <- c(
     "C1O2","C1H2O1","H2O1","N1H3",### from netID
-    "H1N1O1","C1H2","C2H4","C3H6" ### from data
-  ))[,mass_diff := MSCC::chemform_mz(chemform_diff)][
+    "H1N1O1","C1H2","C2H4","C3H6", ### from data,
+    ### 1. Basic small molecules and polar groups ###
+    "H2O1",      # Water loss
+    "N1H3",      # Ammonia loss
+    "C1O2",      # Carbon dioxide loss (Decarboxylation)
+    "C1H2O2",    # Formic acid loss
+    "C1O1",      # Carbon monoxide loss
+
+    ### 2. Lipid and energy metabolism headgroups ###
+    "C2H8N1O4P1",# Phosphoethanolamine loss (PE lipid headgroup)
+    "C3H5N1O2",  # Serine residue loss (PS lipid headgroup)
+    "H3O4P1",    # Phosphoric acid loss (often complementary to H2PO4- in MS)
+
+    ### 3. Sugars and Phase II metabolism modifications ###
+    "C6H10O5",   # Hexose loss (e.g., glucose, galactose)
+    "C5H8O4",    # Pentose loss (e.g., ribose, xylose)
+    "C6H10O4",   # Deoxyhexose loss (e.g., rhamnose, fucose)
+    "C6H8O6",    # Glucuronic acid loss (hallmark of glucuronidation)
+    "S1O3",      # Sulfur trioxide loss (Desulfation)
+    "C12H20O10", # Disaccharide loss (e.g., rutinose in flavonoids)
+
+    ### 4. Common modifications: Methylation & Acetylation ###
+    "C1H4O1",    # Methanol loss (common in methyl esters or methoxy cleavage)
+    "C2H4O2",    # Acetic acid loss (classic marker for acetylated metabolites)
+    "C1H2O1",    # Formaldehyde loss (common in methoxy-containing aromatics)
+    "C2H2O1",    # Ketene loss (alternative form of acetyl skeleton cleavage)
+    "C3H2O3",    # Malonyl group loss (common acylation in plant metabolites)
+
+    ### 5. Nitrogen/Sulfur-specific losses ###
+    "H2S1",      # Hydrogen sulfide loss (indicates sulfur-containing amino acids)
+    "C1H1N1",    # Hydrogen cyanide loss (alkaloids or N-containing heterocycles)
+    "C1H1N1O1",  # Isocyanic acid loss (urea metabolites or pyrimidine cleavage)
+    "C1H3N1O1",  # Formamide loss (deep cleavage of N-containing rings)
+    "C1H5N1",    # Methylamine loss (N-methylated metabolites)
+
+    ### 6. Alkyl chain and hydrocarbon skeleton cleavages ###
+    "C2H4",      # Ethylene loss (McLafferty rearrangement or long-chain lipid cleavage)
+    "C3H6",      # Propylene loss (isoprenoid or lipid cleavage)
+    "C4H8"       # Butene loss
+
+  )
+
+  data.table::data.table(chemform_diff = unique(fragment.formula))[,mass_diff := MSCC::chemform_mz(chemform_diff)][
     ,chemform_diff := chemform_simplify(chemform_diff)
   ][
     ,fragment := chemform_diff ]

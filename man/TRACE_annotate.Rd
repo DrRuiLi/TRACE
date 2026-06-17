@@ -18,7 +18,9 @@ TRACE_annotate(
 \item{cpdb}{Path to compound table xlsx used for candidate assignment.}
 }
 \value{
-Updated MSdev object with `object@advancedAna$TRACE[[pol]]`.
+Updated MSdev object with `object@advancedAna$TRACE[[pol]]`, including
+  `TRACE_cor`, `TRACE_net_score`, `TRACE_anno_score`, `TRACE_fragment`, and
+  `TRACE_isotope` columns when available.
 }
 \description{
 Annotate TRACE seed network candidates and finalize TRACE result
