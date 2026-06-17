@@ -191,22 +191,58 @@ MSdev_save(object)
 
 ### 2.2 Plot annotation change
 
+
+#### 2.2.1 Annotation change summary
+
 ```{r}
-p <- ggplot( pave.trace.merged,aes(x = type_trace,y = type_pave)) +
-  geom_count(show.legend = FALSE )+
-  scale_size(range = c(2,15),
+count.df <- pave.trace.merged %>%
+  dplyr::count(type_trace, type_pave, name = "n")
+
+p <- ggplot2::ggplot(pave.trace.merged, ggplot2::aes(x = type_trace, y = type_pave)) +
+  ggplot2::geom_count(show.legend = FALSE) +
+  ggplot2::scale_size(range = c(2, 13),
              transform = "sqrt") +
-  stat_sum(
-    aes(label = after_stat(n) ) ,
-    geom = "text",
+  ggplot2::geom_text(
+    data = count.df,
+    ggplot2::aes(x = type_trace, y = type_pave, label = n),
     color = "white",
     size = 2,
     show.legend = FALSE
-  )+
-  labs(x = "TRACE annotation", y = "PAVE annotation")+
-  theme_bw(base_size = 6)
+  ) +
+  ggplot2::labs(x = "TRACE annotation", y = "PAVE annotation") +
+  ggplot2::theme_bw(base_size = 6)
 
-open_plot_win(p,2.5,2.5)
+open_plot_win(p, 2.2, 2)
+```
+
+#### 2.2.2 CN formula matched ratio
+
+compare the CN formula matched ratio of TRACE and PAVE, the ratio is the number of features annotated as CN formula in TRACE divided by the number of features annotated as CN formula in PAVE. only metabolite and adduct features are considered.
+use a stack bar plot like :
+|PAVE|OVERLAP|TRACE|
+
+```{r}
+res <- .compare_pave_cn_match_ratio_plot(
+  pave.trace.merged,
+  types = c("Metabolite", "Adduct")
+)
+open_plot_win(res$plot, 5, 1.8)
+```
+
+#### 2.2.3 False positive
+
+show the proportion of false positive of CN formula, the false positive is the features annotated as CN formula in PAVE, but filtered out in TRACE by dynamic filter.
+
+```{r}
+res.cn.fp <- .compare_pave_cn_false_positive_plot(pave.trace.merged)
+open_plot_win(res.cn.fp$plot, 1.5, 2)
+```
+
+show the proportion of false positive of adduct/fragment/isotope, the false positive is the features annotated as adduct/fragment/isotope in PAVE, but filtered out or re-assigned in TRACE by network assignment.
+
+```{r}
+res.afis.fp <- .compare_pave_afis_false_positive_plot(pave.trace.merged)
+open_plot_win(res.afis.fp$plot, 2, 2)
 ```
 
 ### 2.3 Annotation change composition

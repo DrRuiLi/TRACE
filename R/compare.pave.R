@@ -442,13 +442,205 @@ plot_compare_pave_adduct <- function(
     ggplot2::labs(title = title, x = NULL, y = NULL, fill = NULL) +
     ggplot2::theme_void(base_size = 6) +
     ggplot2::theme(
-      plot.title = element_text(hjust = 0.5),
+      plot.title = ggplot2::element_text(hjust = 0.5),
       axis.text.x = ggplot2::element_blank(),
       axis.ticks.x = ggplot2::element_blank(),
       legend.position = "bottom",
       legend.key.size = grid::unit(0.12, "inch"),
       legend.text = ggplot2::element_text(size = 4)
     )
+}
+
+#' CN formula matched ratio bar (PAVE | OVERLAP | TRACE)
+#' @noRd
+.compare_pave_cn_match_ratio_plot <- function(
+    pave.trace.merged,
+    types = c("Metabolite", "Adduct")) {
+  cn.df <- dplyr::filter(
+    pave.trace.merged,
+    type_pave %in% types | type_trace %in% types
+  )
+  cn.df$pave_cn <- !is.na(cn.df$pave_cn) & cn.df$pave_cn
+  cn.df$trace_cn <- !is.na(cn.df$trace_cn) & cn.df$trace_cn
+  cn.df$cn_match <- !is.na(cn.df$cn_match) & cn.df$cn_match
+
+  n_pave_cn <- sum(cn.df$pave_cn, na.rm = TRUE)
+  n_trace_cn <- sum(cn.df$trace_cn, na.rm = TRUE)
+  n_overlap <- sum(cn.df$cn_match, na.rm = TRUE)
+
+  stack.df <- data.frame(
+    part = factor(
+      c("PAVE", "OVERLAP", "TRACE"),
+      levels = c("PAVE", "OVERLAP", "TRACE")
+    ),
+    n = c(
+      sum(cn.df$pave_cn & !cn.df$cn_match, na.rm = TRUE),
+      n_overlap,
+      sum(cn.df$trace_cn & !cn.df$cn_match, na.rm = TRUE)
+    ),
+    stringsAsFactors = FALSE
+  )
+
+  ratio <- if (n_pave_cn > 0) n_trace_cn / n_pave_cn else NA_real_
+  total_n <- sum(stack.df$n)
+  stack.df$pct <- if (total_n > 0) stack.df$n / total_n else 0
+  stack.df$label <- paste0(
+    stack.df$part,
+    "\n",
+    scales::percent(stack.df$pct, accuracy = 0.1)
+  )
+
+  p <- ggplot2::ggplot(stack.df, ggplot2::aes(x = "CN formula", y = n, fill = part)) +
+    ggplot2::geom_col(width = 0.55, color = "white", linewidth = 0.2) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = label),
+      position = ggplot2::position_stack(vjust = 0.5),
+      size = 2,
+      lineheight = 0.9,
+      color = "grey10",
+      show.legend = FALSE
+    ) +
+    ggplot2::scale_y_continuous(labels = scales::comma) +
+    ggplot2::labs(x = NULL, y = "Features count", fill = NULL) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(
+      legend.position = "none",
+      axis.text.x = ggplot2::element_text(size = 6)
+    )
+
+  list(
+    plot = p,
+    ratio = ratio,
+    n_pave_cn = n_pave_cn,
+    n_trace_cn = n_trace_cn,
+    n_overlap = n_overlap,
+    stack = stack.df
+  )
+}
+
+#' Test whether a TRACE annotation is blank/noise
+#' @noRd
+.compare_pave_trace_blank <- function(x) {
+  x <- as.character(x)
+  is.na(x) | x == "" | tolower(x) %in% c("blank/noise", "blank", "noise")
+}
+
+#' CN formula false-positive proportion among PAVE CN features
+#' @noRd
+.compare_pave_cn_false_positive_plot <- function(pave.trace.merged) {
+  cn.df <- pave.trace.merged
+  cn.df$pave_cn <- !is.na(cn.df$pave_cn) & cn.df$pave_cn
+  cn.df$trace_cn <- !is.na(cn.df$trace_cn) & cn.df$trace_cn
+  cn.df <- cn.df[cn.df$pave_cn, , drop = FALSE]
+
+  stack.df <- data.frame(
+    part = factor(
+      c("False positive", "Dynamic filtered"),
+      levels = c("False positive", "Dynamic filtered")
+    ),
+    n = c(
+      sum(!cn.df$trace_cn, na.rm = TRUE),
+      sum(cn.df$trace_cn, na.rm = TRUE)
+    ),
+    stringsAsFactors = FALSE
+  )
+
+  total_n <- sum(stack.df$n)
+  stack.df$pct <- if (total_n > 0) stack.df$n / total_n else 0
+  stack.df$label <- paste0(
+    stack.df$part,
+    "\n",
+    scales::percent(stack.df$pct, accuracy = 0.1)
+  )
+
+  p <- ggplot2::ggplot(stack.df, ggplot2::aes(x = "PAVE CN Finder", y = n, fill = part)) +
+    ggplot2::geom_col(width = 0.55, color = "white", linewidth = 0.2) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = label),
+      position = ggplot2::position_stack(vjust = 0.5),
+      size = 2,
+      lineheight = 0.9,
+      color = "grey10",
+      show.legend = FALSE
+    ) +
+    ggplot2::scale_y_continuous(labels = scales::comma) +
+    ggplot2::labs(x = NULL, y = "Features count", fill = NULL) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = "none")
+
+  list(
+    plot = p,
+    n_pave_cn = total_n,
+    n_false_positive = stack.df$n[stack.df$part == "False positive"],
+    stack = stack.df
+  )
+}
+
+#' Adduct/fragment/isotope false-positive proportion among PAVE CN A/F/I features
+#' @noRd
+.compare_pave_afis_false_positive_plot <- function(pave.trace.merged) {
+  afis.df <- pave.trace.merged
+  afis.df$type_pave <- as.character(afis.df$type_pave)
+  afis.df$type_trace <- as.character(afis.df$type_trace)
+  afis.df$pave_cn <- !is.na(afis.df$pave_cn) & afis.df$pave_cn
+  afis.df <- afis.df[
+    afis.df$pave_cn &
+      afis.df$type_pave %in% c("Adduct", "Fragment", "Isotope"),
+    ,
+    drop = FALSE
+  ]
+
+  trace_filtered <- .compare_pave_trace_blank(afis.df$type_trace)
+  trace_reassigned <- !trace_filtered &
+    !is.na(afis.df$type_trace) &
+    afis.df$type_trace != afis.df$type_pave
+
+  status <- ifelse(
+    trace_filtered,
+    "Filtered out",
+    ifelse(trace_reassigned, "Re-assigned", "Kept")
+  )
+
+  stack.df <- as.data.frame(table(status), stringsAsFactors = FALSE)
+  names(stack.df) <- c("part", "n")
+  stack.df$part <- factor(
+    stack.df$part,
+    levels = c("Filtered out", "Re-assigned", "Kept")
+  )
+  stack.df <- stack.df[order(stack.df$part), , drop = FALSE]
+
+  total_n <- sum(stack.df$n)
+  stack.df$pct <- if (total_n > 0) stack.df$n / total_n else 0
+  stack.df$label <- paste0(
+    stack.df$part,
+    "\n",
+    scales::percent(stack.df$pct, accuracy = 0.1)
+  )
+
+  p <- ggplot2::ggplot(stack.df, ggplot2::aes(x = "PAVE CN A/F/I", y = n, fill = part)) +
+    ggplot2::geom_col(width = 0.55, color = "white", linewidth = 0.2) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = label),
+      position = ggplot2::position_stack(vjust = 0.5),
+      size = 2,
+      lineheight = 0.9,
+      color = "grey10",
+      show.legend = FALSE
+    ) +
+    ggplot2::scale_y_continuous(labels = scales::comma) +
+    ggplot2::labs(x = NULL, y = "Feature count", fill = NULL) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = "none")
+
+  list(
+    plot = p,
+    n_pave_afis = total_n,
+    n_false_positive = sum(
+      stack.df$n[stack.df$part %in% c("Filtered out", "Re-assigned")],
+      na.rm = TRUE
+    ),
+    stack = stack.df
+  )
 }
 
 #' Build PAVE fragment vs TRACE annotation comparison data
