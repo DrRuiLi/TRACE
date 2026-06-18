@@ -1,0 +1,329 @@
+---
+title: "noise_evaluation"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{noise_evaluation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(TRACE)
+library(MSdev)
+library(dplyr)
+library(ggplot2)
+```
+
+
+### 1. Scitific problem
+
+The observation that 'the proportion of high-confidence annotations fell from 2.94% to 1.48%' only reflects true positive results and does not explain the sources of increased “non-biological signals”. Please: (1) describe the blank subtraction method in detail; (2) compare whether blank sample chemical signals change significantly; and (3) discuss other factors contributing to the significant increase in “non-biological signals”. In fact from Supplementary Table 3, when the instrument performance becomes better, annotated metabolites were increased. I suggest modifying the sentence on “2.94% to 1.48%”.
+
+
+### 2. data set
+
+Example LC-MS demo data (same as `TRACE_Demo`):
+
+```{r}
+trace.demo <- MSdev_load("d:/data/PAVE_demo/MSdev_2026_06_01.Rdata")
+trace.demo@sampleInfo
+```
+
+`trace.demo` is used read-only below. Do not call `MSdev_save(trace.demo)` so the on-disk demo file is not overwritten.
+
+### 3. evaluate
+
+#### 3.1 Blank subtraction (TRACE dynamic filter)
+
+TRACE separates CN-labeled feature pairs from random background pairs in the m/z error (ppm) and RT-shift (s) space of the CN network. For each dimension, `distinct_norm_from_random_backgroud()` fits a Gaussian mixture between CN hits (`cn.hit = TRUE`) and background edges (`cn.hit = FALSE`), then sets a dynamic cutoff at `sd * qnorm(p)` (ppm: 0.999; RT: 0.99999). Pairs exceeding either cutoff are removed before network assignment. This is the blank-subtraction step: background-like CN edges are filtered without subtracting raw blank intensities.
+
+```{r}
+{
+  i.pol <- 0
+  pol <- ifelse(i.pol == 0, "Negative", "Positive")
+  temp <- trace.demo@advancedAna$TRACE_temp[[pol]]
+  cn.net.eval <- temp$cn.net.eval
+  ppm.dyn <- temp$mz.dyn$sd * stats::qnorm(0.999)
+  rt.tol.dyn <- temp$rt.dyn$sd * stats::qnorm(0.99999)
+
+  set.seed(1)
+  cn.plot.df <- cn.net.eval[
+    sample.int(nrow(cn.net.eval), min(20000L, nrow(cn.net.eval))),
+  ]
+  cols <- c("TRUE" = "red", "FALSE" = "#888888")
+
+  p.dyn <- ggplot2::ggplot(
+    cn.plot.df,
+    ggplot2::aes(x = mz.ppm, y = rt.diff, col = cn.hit)
+  ) +
+    ggplot2::geom_point(pch = 16, alpha = 0.08, size = 0.15) +
+    ggplot2::geom_vline(
+      xintercept = ppm.dyn * c(-1, 1),
+      col = "red",
+      lty = 2,
+      linewidth = 0.4
+    ) +
+    ggplot2::geom_hline(
+      yintercept = rt.tol.dyn * c(-1, 1),
+      col = "red",
+      lty = 2,
+      linewidth = 0.4
+    ) +
+    ggplot2::scale_color_manual(
+      values = cols,
+      labels = c("Background edge", "CN-labeled edge"),
+      name = NULL
+    ) +
+    ggplot2::labs(
+      x = "m/z error (ppm)",
+      y = "RT shift (s)",
+      title = paste0("Dynamic filter — ", pol)
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = c(0.2, 0.85))
+
+  cn.hit.frac <- mean(cn.net.eval$cn.hit)
+  message(
+    pol, ": dynamic m/z cutoff = ", round(ppm.dyn, 3), " ppm; ",
+    "RT cutoff = ", round(rt.tol.dyn, 2), " s; ",
+    "CN-labeled edges = ", sprintf("%.1f%%", 100 * cn.hit.frac)
+  )
+}
+
+if (interactive()) {
+  open_plot_win(p.dyn, 3, 2.5)
+} else {
+  print(p.dyn)
+}
+```
+
+#### 3.2 Blank sample chemical signal comparison
+
+Compare mean feature intensity in blank replicates versus biological replicates (four TRACE labeling groups). Features with higher blank than biological signal are potential carry-over or solvent background.
+
+```{r}
+{
+  i.pol <- 0
+  pol <- ifelse(i.pol == 0, "Negative", "Positive")
+  xcms.xcms <- trace.demo@xcmsData[[paste0(pol, "MS1")]]
+  xcms.val <- xcms::featureValues(xcms.xcms, missing = 0, value = "maxo")
+  pda <- Biobase::pData(xcms.xcms)
+
+  blank.samps <- rownames(pda)[pda$group == "Blank"]
+  bio.samps <- rownames(pda)[
+    pda$group %in% c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
+  ]
+
+  feat.df <- data.frame(
+    feature_id = seq_len(nrow(xcms.val)),
+    blank_mean = rowMeans(xcms.val[, blank.samps, drop = FALSE]),
+    bio_mean = rowMeans(xcms.val[, bio.samps, drop = FALSE]),
+    blank_rsd = apply(
+      xcms.val[, blank.samps, drop = FALSE],
+      1,
+      function(x) {
+        x <- x[is.finite(x) & x > 0]
+        if (length(x) < 2) {
+          return(NA_real_)
+        }
+        stats::sd(x) / mean(x)
+      }
+    )
+  ) %>%
+    dplyr::mutate(
+      log2_fc = log2((bio_mean + 1) / (blank_mean + 1)),
+      blank_enriched = blank_mean > bio_mean
+    )
+
+  blank.test <- stats::wilcox.test(
+    feat.df$blank_mean,
+    feat.df$bio_mean,
+    paired = TRUE
+  )
+
+  p.blank.fc <- ggplot2::ggplot(feat.df, ggplot2::aes(x = log2_fc)) +
+    ggplot2::geom_histogram(
+      ggplot2::aes(y = ggplot2::after_stat(density), fill = blank_enriched),
+      bins = 60,
+      alpha = 0.75,
+      position = "identity"
+    ) +
+    ggplot2::geom_vline(xintercept = 0, lty = 2, linewidth = 0.4) +
+    ggplot2::scale_fill_manual(
+      values = c("TRUE" = "#E41A1C", "FALSE" = "#377EB8"),
+      labels = c("Biological > blank", "Blank > biological"),
+      name = NULL
+    ) +
+    ggplot2::labs(
+      x = expression(log[2] ~ "(bio mean / blank mean)"),
+      y = "Density",
+      title = paste0("Blank vs biological intensity — ", pol)
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = c(0.75, 0.85))
+
+  p.blank.rsd <- ggplot2::ggplot(
+    feat.df %>% dplyr::filter(is.finite(blank_rsd)),
+    ggplot2::aes(x = blank_rsd)
+  ) +
+    ggplot2::geom_histogram(
+      ggplot2::aes(y = ggplot2::after_stat(density)),
+      bins = 40,
+      fill = "#CCCCCC",
+      col = "white"
+    ) +
+    ggplot2::scale_x_continuous(limits = c(0, 2)) +
+    ggplot2::labs(
+      x = "RSD in blank replicates",
+      y = "Density",
+      title = "Blank replicate variability"
+    ) +
+    ggplot2::theme_bw(base_size = 6)
+
+  p.blank <- p.blank.fc / p.blank.rsd +
+    patchwork::plot_annotation(tag_levels = "A")
+
+  message(
+    pol, ": ", sum(feat.df$blank_enriched), " / ", nrow(feat.df),
+    " features have blank mean > biological mean; ",
+    "paired Wilcoxon p = ", format.pval(blank.test$p.value, digits = 3)
+  )
+}
+
+if (interactive()) {
+  open_plot_win(p.blank, 4, 2.5)
+} else {
+  print(p.blank)
+}
+```
+
+#### 3.3 Annotation composition and noise proportion
+
+Features without a TRACE seed assignment are treated as noise. The stacked bar shows how detected features partition into annotation types versus unassigned noise. The high-confidence metabolite fraction (metabolite seeds / all features) contextualises statements such as “2.94% to 1.48%” — instrument sensitivity increases total features while the noise denominator grows faster than confident metabolite calls.
+
+```{r}
+{
+  type.levels <- c("metabolite", "adduct", "fragment", "isotope", "noise")
+  type.comp.list <- lapply(c("Negative", "Positive"), function(pol) {
+    xcms.xcms <- trace.demo@xcmsData[[paste0(pol, "MS1")]]
+    n.all <- nrow(xcms::featureDefinitions(xcms.xcms))
+    trace.df <- trace.demo@advancedAna$TRACE[[pol]]
+
+    if (is.null(trace.df) || !nrow(trace.df)) {
+      return(NULL)
+    }
+
+    trace.df <- as.data.frame(trace.df)
+    anno.count <- trace.df %>%
+      dplyr::mutate(
+        type = dplyr::case_when(
+          is.na(type) | type == "" ~ "noise",
+          TRUE ~ as.character(type)
+        )
+      ) %>%
+      dplyr::count(type, name = "feature_n")
+
+    anno.count <- rbind(
+      anno.count,
+      data.frame(
+        type = "noise",
+        feature_n = n.all - sum(anno.count$feature_n),
+        stringsAsFactors = FALSE
+      )
+    ) %>%
+      dplyr::group_by(type) %>%
+      dplyr::summarise(feature_n = sum(feature_n), .groups = "drop") %>%
+      dplyr::mutate(
+        polarity = pol,
+        type = factor(type, levels = type.levels),
+        pct = 100 * feature_n / n.all
+      )
+
+    cn.hit <- trace.demo@advancedAna$TRACE_temp[[pol]]$cn.net.hit
+    n.high.cor <- sum(cn.hit$TRACE_cor >= 0.75, na.rm = TRUE)
+
+    message(
+      pol, ": ", n.all, " features; ",
+      "metabolite = ", anno.count$feature_n[anno.count$type == "metabolite"], " (",
+      round(anno.count$pct[anno.count$type == "metabolite"], 2), "%); ",
+      "noise = ", anno.count$feature_n[anno.count$type == "noise"], " (",
+      round(anno.count$pct[anno.count$type == "noise"], 2), "%); ",
+      "CN seeds with TRACE_cor >= 0.75 = ", n.high.cor, " (",
+      round(100 * n.high.cor / n.all, 2), "%)"
+    )
+
+    anno.count
+  })
+
+  type.comp <- dplyr::bind_rows(type.comp.list)
+
+  p.type <- ggplot2::ggplot(type.comp, ggplot2::aes(x = polarity, y = feature_n, fill = type)) +
+    ggplot2::geom_col(position = "stack", width = 0.65) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = ifelse(pct >= 3, paste0(round(pct, 1), "%"), "")),
+      position = ggplot2::position_stack(vjust = 0.5),
+      size = 2,
+      col = "white"
+    ) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.05))) +
+    ggplot2::scale_fill_brewer(palette = "Set2", name = "Annotation") +
+    ggplot2::labs(
+      x = NULL,
+      y = "Feature count",
+      title = "TRACE annotation vs noise"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(legend.position = "right")
+}
+
+if (interactive()) {
+  open_plot_win(p.type, 3, 2.5)
+} else {
+  print(p.type)
+}
+```
+
+#### 3.4 Feature RSD across sample groups (including Blank)
+
+Replicate RSD distinguishes stable biological CN patterns from unstable blank or solvent noise. Blank and QC groups are coloured as noise in the TRACE colour scheme.
+
+```{r}
+{
+  p.rsd <- plot_TRACE_RSD(
+    trace.demo,
+    i.pol = 0,
+    exclude.blank = FALSE,
+    rsd.max = 1.5
+  )
+}
+
+if (interactive()) {
+  open_plot_win(p.rsd, 3, 2.5)
+} else {
+  print(p.rsd)
+}
+```
+
+#### 3.5 Other factors contributing to non-biological signals
+
+Besides blank subtraction and raw blank intensity, TRACE noise can arise from: (1) xcms peak picking sensitivity (more features at higher instrument performance), (2) CN edges failing the dynamic m/z–RT filter, (3) low `TRACE_cor` CN bundles, and (4) network re-assignment of adduct/fragment/isotope candidates. Labeling-fraction distributions of confident metabolites help separate true CN labeling from random co-elution.
+
+```{r}
+{
+  p.label <- plot_TRACE_labeling_fraction(trace.demo, i.pol = 0)
+}
+
+if (interactive()) {
+  open_plot_win(p.label, 4, 2.5)
+} else {
+  print(p.label)
+}
+```
+
