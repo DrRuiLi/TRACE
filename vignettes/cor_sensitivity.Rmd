@@ -1,0 +1,236 @@
+---
+title: "cor_sensitivity"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{cor_sensitivity}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(TRACE)
+library(MSdev)
+library(dplyr)
+library(ggplot2)
+```
+
+
+### 1. Scitific problem
+
+ The authors should provide a sensitivity analysis across multiple ρ thresholds (TRACE_cor) and report effects on bundle numbers.
+
+
+
+
+
+### 2. data set
+
+Example LC-MS demo data (same as `TRACE_Demo`):
+```{r}
+trace.demo <- MSdev_load("d:/data/PAVE_demo/MSdev_2026_06_01.Rdata")
+trace.demo@sampleInfo
+```
+
+`trace.demo` is used read-only below. Do not call `MSdev_save(trace.demo)` so the on-disk demo file is not overwritten.
+
+### 3. evaluate
+
+We perform a sensitivity analysis across multiple ρ thresholds (`TRACE_cor`), `seq(0.5, 0.95, 0.05)`, using the CN-finder table already stored in `trace.demo@advancedAna$TRACE_temp` (read-only). For each cutoff we count CN bundle edges (`cn.net.hit` rows) and CN seeds (unique bundle `from` IDs), then quantify seed-set overlap across thresholds.
+
+#### 3.1 Bundle numbers across TRACE_cor cutoffs
+
+```{r}
+{
+  cor.list <- seq(0.5, 0.95, 0.05)
+  cor.labels <- paste0("rho=", cor.list)
+
+  bundle.list <- lapply(c("Negative", "Positive"), function(pol) {
+    cn.finder <- trace.demo@advancedAna$TRACE_temp[[pol]]$CNfinder
+    if (is.null(cn.finder) || !nrow(cn.finder)) {
+      return(NULL)
+    }
+
+    cn.finder <- data.table::as.data.table(cn.finder)
+
+    lapply(seq_along(cor.list), function(i) {
+      cn.hit <- cn.finder[TRACE_cor >= cor.list[i] & is.finite(TRACE_cor)]
+      data.frame(
+        cor.cut = cor.list[i],
+        param.label = cor.labels[i],
+        polarity = pol,
+        n_edge = nrow(cn.hit),
+        n_seed = length(unique(cn.hit$from)),
+        mean_bundle_size = if (nrow(cn.hit)) {
+          mean(table(cn.hit$from))
+        } else {
+          NA_real_
+        },
+        stringsAsFactors = FALSE
+      )
+    }) %>% dplyr::bind_rows()
+  })
+
+  bundle.summary <- dplyr::bind_rows(bundle.list) %>%
+    dplyr::mutate(
+      cor.cut = factor(cor.cut, levels = cor.list),
+      param.label = factor(param.label, levels = cor.labels)
+    )
+
+  p.bundle <- ggplot2::ggplot(
+    bundle.summary,
+    ggplot2::aes(x = cor.cut, y = n_seed, color = polarity, group = polarity)
+  ) +
+    ggplot2::geom_line(linewidth = 0.6) +
+    ggplot2::geom_point(size = 1.2) +
+    ggplot2::scale_color_brewer(palette = "Set1", name = "Polarity") +
+    ggplot2::labs(
+      x = expression(rho ~ " "),
+      y = "CN seed count",
+      #title = "CN seeds retained across TRACE_cor cutoffs"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+
+  p.edge <- ggplot2::ggplot(
+    bundle.summary,
+    ggplot2::aes(x = cor.cut, y = n_edge, color = polarity, group = polarity)
+  ) +
+    ggplot2::geom_line(linewidth = 0.6) +
+    ggplot2::geom_point(size = 1.2) +
+    ggplot2::scale_color_brewer(palette = "Set1", name = "Polarity") +
+    ggplot2::labs(
+      x = expression(rho ~ " "),
+      y = "CN bundle edge count",
+     # title = "CN bundle edges retained across TRACE_cor cutoffs"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+
+  p.bundle.all <- p.bundle + p.edge +
+    patchwork::plot_annotation(tag_levels = "A")+
+    patchwork::plot_layout(guides = "collect")
+
+  print(bundle.summary)
+}
+
+if (interactive()) {
+  open_plot_win(p.bundle.all, 5, 2.5)
+} else {
+  print(p.bundle.all)
+}
+```
+
+#### 3.2 CN seed overlap across TRACE_cor thresholds
+
+CN seeds that persist only at low ρ are less confident; seeds shared across high ρ values form a stable core set.
+
+```{r}
+{
+  cn.hit.all <- lapply(c("Negative", "Positive"), function(pol) {
+    cn.finder <- data.table::as.data.table(
+      trace.demo@advancedAna$TRACE_temp[[pol]]$CNfinder
+    )
+    if (is.null(cn.finder) || !nrow(cn.finder)) {
+      return(NULL)
+    }
+
+    lapply(seq_along(cor.list), function(i) {
+      cn.hit <- cn.finder[TRACE_cor >= cor.list[i] & is.finite(TRACE_cor)]
+      cn.hit[, .SD[which.max(TRACE_cor)], by = from] %>%
+        as.data.frame() %>%
+        dplyr::mutate(
+          cor.cut = cor.list[i],
+          param.label = cor.labels[i],
+          polarity = pol,
+          TRACE_formula = dplyr::coalesce(
+            as.character(TRACE_pattern),
+            "unknown"
+          )
+        )
+    }) %>% dplyr::bind_rows()
+  }) %>%
+    dplyr::bind_rows()
+
+  cn.seed <- cn.hit.all %>%
+    dplyr::distinct(cor.cut, param.label, polarity, from, .keep_all = TRUE)
+
+  formula.comp <- cn.seed %>%
+    dplyr::mutate(
+      TRACE_formula = dplyr::coalesce(as.character(TRACE_formula), "unknown"),
+      cor.cut = factor(cor.cut, levels = cor.list),
+      param.label = factor(param.label, levels = cor.labels)
+    ) %>%
+    dplyr::count(polarity, cor.cut, param.label, TRACE_formula, name = "feature_n") %>%
+    dplyr::ungroup()
+
+  p.formula <- ggplot2::ggplot(
+    formula.comp %>% dplyr::filter(polarity == "Negative"),
+    ggplot2::aes(x = param.label, y = feature_n, fill = TRACE_formula)
+  ) +
+    ggplot2::geom_col(position = "stack", width = 0.7) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.05))) +
+    ggplot2::scale_fill_brewer(palette = "Set2", name = "CN formula") +
+    ggplot2::labs(
+      x = NULL,
+      y = "CN seed count",
+      title = "CN seed composition (Negative) across TRACE_cor cutoffs"
+    ) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(size = 4, angle = 45, hjust = 1),
+      legend.position = "right"
+    )
+
+  seed.sets <- lapply(seq_along(cor.list), function(i) {
+    cn.seed %>%
+      dplyr::filter(cor.cut == cor.list[i]) %>%
+      dplyr::pull(from) %>%
+      unique()
+  })
+  names(seed.sets) <- cor.labels
+
+  core.seeds <- Reduce(intersect, seed.sets)
+  message(
+    "CN seeds shared across all rho = ", length(core.seeds), " / ",
+    length(seed.sets[[1]]), " at rho = ", cor.list[1]
+  )
+}
+
+if (interactive()) {
+  open_plot_win(p.formula, 4, 2.5)
+} else {
+  print(p.formula)
+}
+```
+
+```{r}
+{
+  if (requireNamespace("UpSetR", quietly = TRUE)) {
+    seed.mat <- UpSetR::fromList(seed.sets)
+    p.upset <- UpSetR::upset(
+      seed.mat,
+      nsets = length(seed.sets),
+      order.by = "freq",
+      decreasing = TRUE,
+      mainbar.y.label = "CN seed intersection size",
+      sets.x.label = "CN seeds per TRACE_cor cutoff",
+      text.scale = c(1.3, 1.1, 1, 1, 1.2, 1),
+      main.bar.color = "#66C2A5",
+      sets.bar.color = "#FC8D62"
+    )
+    print(p.upset)
+  } else {
+    message(
+      "Install UpSetR to draw the CN seed UpSet plot: ",
+      "install.packages('UpSetR')"
+    )
+  }
+}
+```
