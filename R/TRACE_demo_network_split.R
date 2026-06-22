@@ -201,6 +201,82 @@
   paste0(formula, "\n", type, "\n", mz)
 }
 
+#' Build ggplot network plot for split-network demo
+#' @noRd
+.trace_ggplot_network_split_demo <- function(
+    ig,
+    title,
+    layout = "fr",
+    show_edge_label = TRUE,
+    ...) {
+  if (!requireNamespace("ggraph", quietly = TRUE) ||
+      !requireNamespace("tidygraph", quietly = TRUE) ||
+      !requireNamespace("ggplot2", quietly = TRUE)) {
+    stop(
+      "ggplot network plot requires packages ggraph, tidygraph, and ggplot2.",
+      call. = FALSE
+    )
+  }
+
+  g <- tidygraph::as_tbl_graph(ig)
+  lay <- ggraph::create_layout(g, layout = layout)
+  vpos <- as.data.frame(lay[, c("x", "y")])
+  vpos$name <- as.character(lay$name)
+
+  ends <- igraph::ends(ig, igraph::E(ig), names = TRUE)
+  elabs <- igraph::E(ig)$label
+  if (!isTRUE(show_edge_label)) {
+    elabs <- rep("", length(elabs))
+  }
+  eda <- data.frame(
+    from = ends[, 1],
+    to = ends[, 2],
+    color = igraph::E(ig)$color,
+    label = elabs,
+    stringsAsFactors = FALSE
+  )
+  eda <- merge(eda, vpos, by.x = "from", by.y = "name", suffixes = c("", ".from"))
+  eda <- merge(eda, vpos, by.x = "to", by.y = "name", suffixes = c("", ".to"))
+  eda$x <- (eda$x + eda$x.to) / 2
+  eda$y <- (eda$y + eda$y.to) / 2
+  eda$label <- ifelse(nzchar(eda$label), eda$label, NA_character_)
+
+  p <- ggraph::ggraph(lay) +
+    ggraph::geom_edge_link(
+      ggplot2::aes(color = I(color)),
+      arrow = grid::arrow(length = grid::unit(2, "mm"), type = "closed"),
+      end_cap = ggraph::circle(4, "mm"),
+      linewidth = 0.9
+    ) +
+    ggplot2::geom_text(
+      data = eda,
+      ggplot2::aes(x = x, y = y, label = label),
+      size = 2.2,
+      family = "Arial",
+      color = "grey30",
+      na.rm = TRUE
+    ) +
+    ggraph::geom_node_point(
+      ggplot2::aes(fill = I(color)),
+      shape = 21,
+      color = "black",
+      size = 8
+    ) +
+    ggraph::geom_node_text(
+      ggplot2::aes(label = label),
+      family = "Arial",
+      size = 2.2,
+      lineheight = 0.85
+    ) +
+    ggplot2::theme_void(base_family = "Arial") +
+    ggplot2::labs(title = title) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(size = 10, face = "bold", hjust = 0.5),
+      ...
+    )
+  p
+}
+
 #' Plot a TRACE network split demo colored by assignment group
 #'
 #' Nodes are colored by assignment group. Within-group edges use the group
@@ -209,10 +285,11 @@
 #' @param demo List returned by [`.trace_find_network_split_demo()`] or loaded
 #'   from cache.
 #' @param file Optional path to save the plot (pdf/png depending on extension).
-#' @param group_colors Named vector of two colors for assignment groups.
-#' @param ... Passed to [igraph::plot.igraph()].
+#' @param group_colors Named vector of colors for assignment groups.
+#' @param layout Layout passed to [ggraph::create_layout()].
+#' @param ... Passed to [ggplot2::theme()].
 #'
-#' @returns Invisibly, the demo list.
+#' @returns Invisibly, a `ggplot` object suitable for [MSdev::open_plot_win()].
 #' @export
 plot_TRACE_network_split_demo <- function(
     demo,
@@ -222,6 +299,7 @@ plot_TRACE_network_split_demo <- function(
     vertex_label_data = NULL,
     vertex_label_id_prefix = "FT",
     show_edge_label = TRUE,
+    layout = "fr",
     ...) {
   if (is.null(demo) || is.null(demo$ig)) {
     stop("Invalid network split demo: missing igraph object.")
@@ -229,7 +307,7 @@ plot_TRACE_network_split_demo <- function(
   ig <- demo$ig
   vnames <- igraph::V(ig)$name
 
-  grp <- if (is.null(vertex_group)) {
+  grp_raw <- if (is.null(vertex_group)) {
     demo$vertex_data$assign.group[match(vnames, demo$vertex_data$name)]
   } else if (is.character(vertex_group) && length(vertex_group) == 1L &&
     vertex_group %in% names(demo$vertex_data)) {
@@ -246,20 +324,37 @@ plot_TRACE_network_split_demo <- function(
       )
     }
   }
-  grp <- as.character(grp)
-  grp[is.na(grp) | !nzchar(grp)] <- "Unassigned"
+
+  grp <- as.character(grp_raw)
+  na_idx <- which(is.na(grp_raw) | !nzchar(grp))
+  if (!is.null(vertex_group) && length(na_idx)) {
+    na_cols <- grDevices::hcl.colors(length(na_idx), palette = "Pastel 1")
+    for (k in seq_along(na_idx)) {
+      ii <- na_idx[k]
+      grp[ii] <- paste0(".na.", vnames[ii])
+    }
+  } else if (length(na_idx)) {
+    grp[na_idx] <- "Unassigned"
+  }
   grp_levels <- unique(grp)
 
   if (is.null(names(group_colors)) || !all(grp_levels %in% names(group_colors))) {
-    group_colors <- grDevices::hcl.colors(length(grp_levels), palette = "Dark 3")
-    names(group_colors) <- grp_levels
+    auto_cols <- grDevices::hcl.colors(length(grp_levels), palette = "Dark 3")
+    names(auto_cols) <- grp_levels
+    missing <- setdiff(grp_levels, names(group_colors))
+    group_colors <- c(group_colors, auto_cols[missing])
   }
-  if ("Unassigned" %in% grp_levels) {
+  if ("Unassigned" %in% grp_levels && is.null(group_colors[["Unassigned"]])) {
     group_colors[["Unassigned"]] <- "grey70"
+  }
+  if (!is.null(vertex_group) && length(na_idx)) {
+    for (k in seq_along(na_idx)) {
+      tag <- paste0(".na.", vnames[na_idx[k]])
+      group_colors[[tag]] <- na_cols[k]
+    }
   }
 
   igraph::V(ig)$color <- group_colors[as.character(grp)]
-  igraph::V(ig)$frame.color <- "black"
 
   if (is.null(vertex_label_data)) {
     formula <- if ("TRACE_formula" %in% names(demo$vertex_data)) {
@@ -300,58 +395,38 @@ plot_TRACE_network_split_demo <- function(
     MoreArgs = list(id_prefix = vertex_label_id_prefix),
     USE.NAMES = FALSE
   )
-  igraph::V(ig)$label.color <- "grey20"
-  igraph::V(ig)$label.family <- "Arial"
-  igraph::V(ig)$label.cex <- 0.6
-  igraph::V(ig)$size <- 22
 
   vgrp <- stats::setNames(grp, as.character(vnames))
   estyle <- .trace_split_demo_edge_style(ig, vgrp, demo$edge_data, group_colors)
   igraph::E(ig)$color <- estyle$color
-  igraph::E(ig)$label <- if (isTRUE(show_edge_label)) estyle$label else ""
-  igraph::E(ig)$label.color <- "grey30"
-  igraph::E(ig)$label.cex <- 0.65
-  igraph::E(ig)$arrow.size <- 0.45
-  igraph::E(ig)$width <- 1.8
-
-  if (!is.null(file)) {
-    ext <- tolower(tools::file_ext(file))
-    if (ext == "pdf") {
-      grDevices::pdf(file, width = 9, height = 7)
-      on.exit(grDevices::dev.off(), add = TRUE)
-    } else if (ext %in% c("png", "jpg", "jpeg")) {
-      grDevices::png(file, width = 1400, height = 1000, res = 120)
-      on.exit(grDevices::dev.off(), add = TRUE)
-    }
-  }
+  igraph::E(ig)$label <- estyle$label
 
   title <- sprintf(
     "TRACE assignment split (component %s: %s)",
     demo$conn.component,
-    paste(grp_levels, collapse = " vs ")
+    paste(unique(demo$assign.groups), collapse = " vs ")
   )
-  ok <- FALSE
-  try({
-    plot(
-      ig,
-      main = title,
-      vertex.label.dist = 1.3,
-      edge.curved = 0,
-      ...
-    )
-    ok <- TRUE
-  }, silent = TRUE)
-  if (!ok) {
-    igraph::V(ig)$label.family <- "sans"
-    plot(
-      ig,
-      main = title,
-      vertex.label.dist = 1.3,
-      edge.curved = 0,
-      ...
-    )
+
+  p <- .trace_ggplot_network_split_demo(
+    ig,
+    title = title,
+    layout = layout,
+    show_edge_label = show_edge_label,
+    ...
+  )
+
+  if (!is.null(file)) {
+    ext <- tolower(tools::file_ext(file))
+    if (ext == "pdf") {
+      ggplot2::ggsave(file, p, width = 9, height = 7, device = "pdf")
+    } else if (ext %in% c("png", "jpg", "jpeg")) {
+      ggplot2::ggsave(file, p, width = 1400 / 120, height = 1000 / 120, dpi = 120)
+    } else {
+      ggplot2::ggsave(file, p, width = 9, height = 7)
+    }
   }
-  invisible(demo)
+
+  invisible(p)
 }
 
 #' Build and cache a TRACE CN network split demo

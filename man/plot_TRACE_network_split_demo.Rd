@@ -12,6 +12,7 @@ plot_TRACE_network_split_demo(
   vertex_label_data = NULL,
   vertex_label_id_prefix = "FT",
   show_edge_label = TRUE,
+  layout = "fr",
   ...
 )
 }
@@ -21,12 +22,14 @@ from cache.}
 
 \item{file}{Optional path to save the plot (pdf/png depending on extension).}
 
-\item{group_colors}{Named vector of two colors for assignment groups.}
+\item{group_colors}{Named vector of colors for assignment groups.}
 
-\item{...}{Passed to [igraph::plot.igraph()].}
+\item{layout}{Layout passed to [ggraph::create_layout()].}
+
+\item{...}{Passed to [ggplot2::theme()].}
 }
 \value{
-Invisibly, the demo list.
+Invisibly, a `ggplot` object suitable for [MSdev::open_plot_win()].
 }
 \description{
 Nodes are colored by assignment group. Within-group edges use the group

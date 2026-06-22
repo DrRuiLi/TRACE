@@ -308,10 +308,9 @@ lab.df <- pave.trace.merged %>%
   dplyr::filter(feature_id %in% nodes) %>%
   dplyr::mutate(feature_id = as.character(feature_id))
 
-par(mfrow = c(1, 2), mar = c(1, 1, 2, 1), family = "Arial")
 
 # p1: color by TRACE metabolite group (seed_trace)
-plot_TRACE_network_split_demo(
+p1 <- plot_TRACE_network_split_demo(
   demo,
   show_edge_label = TRUE,
   vertex_group = setNames(lab.df$seed_trace, lab.df$feature_id),
@@ -325,7 +324,7 @@ plot_TRACE_network_split_demo(
 )
 
 # p2: color by PAVE metabolite group (pave_seed)
-plot_TRACE_network_split_demo(
+p2 <- plot_TRACE_network_split_demo(
   demo,
   show_edge_label = FALSE,
   vertex_group = setNames(lab.df$pave_seed, lab.df$feature_id),
@@ -337,28 +336,6 @@ plot_TRACE_network_split_demo(
     stringsAsFactors = FALSE
   )
 )
+
+open_plot_win(p1 | p2, 10, 5)
 ```
-
-### 3. note
-
-### Compare PAVE and TRACE result
-
-1.  the PAVE-matlab result was stored in the `PAVE_matlab` folder, the TRACE result was stored in the `"c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/pks_features.xlsx"`
-2.  the TRACE result was stored in the `"d:/temp/TRACE.xlsx"`
-3.  read in both of these files and write code to compare the result, code append to "test/test.R" and placed in {}
-4.  the code should compare and plot:
-
-- a dot plot, x with annotation type of TRACE, y is annotation type of PAVE-matlab, the color is the correlation score of the TRACE result, the size is the number of features
-- a radar plot, the ratio of the CN formula matched
-
-5.  do not use mz/rt match, the feature_id has been matched in the TRACE_workflow, just use the feature_id to compare the result
-6.  the p1 should contain blank/noise
-7.  P2 use the pie plot, just show ratio of CN mathced/unmatched count of TRACE and PAVE-matlab
-8.  align the two result with feature_id: trace$feature_id  and pave$feature_id (its numeric part), do not use .match_mz_rt
-
-#### CN net compare
-
-1.  distinct the features assigned to CN from TRACE and PAVE-matlab, plot the ratio of features assigned to CN in TRACE but not in PAVE-matlab, and the ratio of features assigned to CN in PAVE-matlab but not in TRACE.
-2.  merge the two result to one data.frame, with columns:
-
-- feature_id, formula_pave, formula_trace, ......
