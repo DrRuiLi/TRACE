@@ -242,3 +242,95 @@ nutrition_met_label <- function(metabolite, pave_formula, feature_id, polarity) 
   nm <- dplyr::coalesce(as.character(metabolite), as.character(pave_formula))
   paste0(nm, " (", polarity, " #", feature_id, ")")
 }
+
+#' Summarize absorb forms with atom-count-weighted scores
+#'
+#' Per metabolite, weighted contribution is `absorb_ratio * (c_absorb +
+#' n_absorb)`. For absorb form `C5N5` with ratio `0.2`, the weight is
+#' `10 * 0.2 = 2`. Values are summed across metabolites per group and
+#' absorb form.
+#'
+#' @param absorb_df Output from [run_absorb_form_analysis()] after
+#'   [drop_absorb_c0n0()].
+#' @param nutrient_groups Optional character vector of groups to retain.
+#'
+#' @returns A data.frame with `sum_absorb_ratio` and `sum_weighted_absorb`.
+#' @export
+nutrition_summarize_absorb_global <- function(absorb_df, nutrient_groups = NULL) {
+  if (!is.null(nutrient_groups)) {
+    absorb_df <- absorb_df %>%
+      dplyr::filter(group %in% nutrient_groups)
+  }
+
+  absorb_df %>%
+    dplyr::mutate(atom_count = c_absorb + n_absorb) %>%
+    dplyr::group_by(feature_id, polarity, group, absorb_pattern, c_absorb, n_absorb, atom_count) %>%
+    dplyr::summarize(
+      mean_absorb_ratio = mean(absorb_fraction, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(weighted_absorb = mean_absorb_ratio * atom_count) %>%
+    dplyr::group_by(group, absorb_pattern, c_absorb, n_absorb, atom_count) %>%
+    dplyr::summarize(
+      sum_absorb_ratio = sum(mean_absorb_ratio, na.rm = TRUE),
+      sum_weighted_absorb = sum(weighted_absorb, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+#' Select top absorb forms per nutrient group
+#'
+#' @param absorb_global Output of [nutrition_summarize_absorb_global()].
+#' @param groups Group ids to select from (e.g. supplement conditions).
+#' @param top_n Number of forms per group.
+#' @param rank_by Rank by `"weighted"` (`sum_weighted_absorb`) or `"ratio"`
+#'   (`sum_absorb_ratio`).
+#'
+#' @returns A data.frame of selected group–form rows.
+#' @export
+nutrition_select_top_absorb_forms <- function(
+    absorb_global,
+    groups,
+    top_n = 10,
+    rank_by = c("weighted", "ratio")) {
+  rank_by <- match.arg(rank_by)
+  score_col <- if (rank_by == "weighted") "sum_weighted_absorb" else "sum_absorb_ratio"
+
+  absorb_global %>%
+    dplyr::filter(group %in% groups) %>%
+    dplyr::group_by(group) %>%
+    dplyr::arrange(dplyr::desc(.data[[score_col]]), absorb_pattern) %>%
+    dplyr::slice_head(n = top_n) %>%
+    dplyr::ungroup()
+}
+
+#' Merge top absorb forms selected per group
+#'
+#' @param top_per_group Output of [nutrition_select_top_absorb_forms()].
+#' @param absorb_global Output of [nutrition_summarize_absorb_global()].
+#' @param rank_by Score used to order merged forms.
+#'
+#' @returns A list with `forms` (ordered absorb patterns) and `detail`
+#'   (full rows for plotting).
+#' @export
+nutrition_merge_top_absorb_forms <- function(
+    top_per_group,
+    absorb_global,
+    rank_by = c("weighted", "ratio")) {
+  rank_by <- match.arg(rank_by)
+  score_col <- if (rank_by == "weighted") "sum_weighted_absorb" else "sum_absorb_ratio"
+
+  merged.forms <- absorb_global %>%
+    dplyr::filter(absorb_pattern %in% top_per_group$absorb_pattern) %>%
+    dplyr::group_by(absorb_pattern, c_absorb, n_absorb, atom_count) %>%
+    dplyr::summarize(
+      total = sum(.data[[score_col]], na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(total))
+
+  list(
+    forms = merged.forms,
+    patterns = merged.forms$absorb_pattern
+  )
+}

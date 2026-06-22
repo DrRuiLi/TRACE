@@ -86,8 +86,11 @@ nutrient.colors.supplement <- nutrient.colors[nutrient.groups.supplement]
 
 Nutrient absorb-form helpers live in `R/nutrition.R` and are exported by
 the TRACE package: [extract_cn_labeling_forms()],
-[compute_absorb_forms()], [drop_absorb_c0n0()], [run_absorb_form_analysis()],
-and [nutrition_met_label()].
+[compute_absorb_forms()], [drop_absorb_c0n0()],
+[run_absorb_form_analysis()], [nutrition_met_label()],
+[nutrition_summarize_absorb_global()],
+[nutrition_select_top_absorb_forms()], and
+[nutrition_merge_top_absorb_forms()].
 
 ## 2. Extract absorb forms for all metabolites
 
@@ -199,10 +202,11 @@ if (exists("example_met") && nrow(example_met) > 0) {
 
 #### 3.3.1 C/N absorption
 
-**True absorption fraction** (as in `test/test.R`): weighted mean absorbed C or
-N atoms per metabolite, including the fully labeled absorb form `C0N0`. Higher
-values mean more unlabeled nutrient incorporation. The scatter plot summarizes
-mean absorbed C and N counts per metabolite sample (`C0N0` excluded).
+**True absorption fraction** (as in `test/test.R`): weighted mean
+absorbed C or N atoms per metabolite, including the fully labeled absorb
+form `C0N0`. Higher values mean more unlabeled nutrient incorporation.
+The scatter plot summarizes mean absorbed C and N counts per metabolite
+sample (`C0N0` excluded).
 
 ```{r plot-global-cn-absorption, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
 true.absorb <- absorb.all %>%
@@ -288,43 +292,38 @@ if (requireNamespace("patchwork", quietly = TRUE)) {
 
 #### 3.3.2 CN form absorption
 
-**Absorb-form composition** (after dropping `C0N0`, **without** renormalizing):
-for each nutrient supplement condition (control excluded), the **top 10**
-absorb forms by summed absorb ratio are selected. The union across seven
-supplement groups yields up to **70** unique forms. Their **sum absorb ratio**
-is shown across all supplement conditions (stacked bar and dot heatmap).
+**Absorb-form composition** (after dropping `C0N0`, **without**
+renormalizing): for each supplement condition (control excluded), the
+**top 10** absorb forms are selected by **atom-count-weighted** score
+`sum(absorb_ratio × (c_absorb + n_absorb))` — e.g. `C5N5` with ratio
+`0.2` contributes `10 × 0.2 = 2` per metabolite. The union across seven
+groups is plotted as **sum weighted absorb** (stacked bar and dot
+heatmap).
 
 ```{r plot-global-cn-form-bar, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
-absorb.global <- absorb.all.cnform %>%
-  filter(group %in% nutrient.groups) %>%
-  group_by(feature_id, polarity, group, absorb_pattern, c_absorb, n_absorb) %>%
-  summarize(
-    mean_absorb_ratio = mean(absorb_fraction, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(group, absorb_pattern, c_absorb, n_absorb) %>%
-  summarize(
-    sum_absorb_ratio = sum(mean_absorb_ratio, na.rm = TRUE),
-    .groups = "drop"
-  )
+absorb.global <- nutrition_summarize_absorb_global(
+  absorb.all.cnform,
+  nutrient_groups = nutrient.groups
+)
 
-top10.per.group <- absorb.global %>%
-  filter(group %in% nutrient.groups.supplement) %>%
-  group_by(group) %>%
-  arrange(desc(sum_absorb_ratio), absorb_pattern) %>%
-  dplyr::slice_head(n = 10) %>%
-  ungroup()
+top10.per.group <- nutrition_select_top_absorb_forms(
+  absorb.global,
+  groups = nutrient.groups.supplement,
+  top_n = 10,
+  rank_by = "weighted"
+)
 
-merged.absorb.forms <- absorb.global %>%
-  filter(absorb_pattern %in% top10.per.group$absorb_pattern) %>%
-  group_by(absorb_pattern, c_absorb, n_absorb) %>%
-  summarize(total = sum(sum_absorb_ratio, na.rm = TRUE), .groups = "drop") %>%
-  arrange(desc(total))
+merged.absorb <- nutrition_merge_top_absorb_forms(
+  top10.per.group,
+  absorb.global,
+  rank_by = "weighted"
+)
+merged.absorb.forms <- merged.absorb$forms
 
 absorb.merged <- absorb.global %>%
   filter(
     group %in% nutrient.groups.supplement,
-    absorb_pattern %in% merged.absorb.forms$absorb_pattern
+    absorb_pattern %in% merged.absorb$patterns
   ) %>%
   mutate(
     nutrient = factor(
@@ -332,73 +331,64 @@ absorb.merged <- absorb.global %>%
       levels = nutrient.groups.supplement,
       labels = nutrient.labels.supplement
     ),
-    absorb_pattern = factor(absorb_pattern, levels = merged.absorb.forms$absorb_pattern)
+    absorb_pattern = factor(absorb_pattern, levels = merged.absorb$patterns)
   )
 
-p.cnform.bar <- ggplot(absorb.merged, aes(x = nutrient, y = sum_absorb_ratio, fill = absorb_pattern)) +
+p.cnform.bar <- ggplot(absorb.merged, aes(x = nutrient, y = sum_weighted_absorb, fill = absorb_pattern)) +
   geom_col(color = "grey30", linewidth = 0.15, width = 0.75) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
   scale_fill_viridis_d(option = "turbo", direction = -1) +
-  labs(x = NULL, y = "Sum absorb ratio", fill = "Absorb form") +
+  labs(x = NULL, y = "Sum weighted absorb", fill = "Absorb form") +
   theme_bw(base_size = 6) +
   theme(
     axis.text.x = element_text(angle = -35, hjust = 0),
-    legend.key.size = unit(0.25, "cm"),
+    legend.key.size = unit(0.15, "cm"),
     legend.text = element_text(size = 4)
   )
 
 MSdev::open_plot_win(p.cnform.bar, 2.5, 2)
 ```
 
-The heatmap uses **ComplexHeatmap** with circle markers. Rows are the merged
-absorb forms; columns are the seven supplement conditions (control excluded).
+The heatmap uses **ComplexHeatmap** with circle markers. Rows are the
+merged absorb forms; columns are the seven supplement conditions
+(control excluded).
 
 ```{r plot-global-cn-form-heatmap, eval = file.exists("d:/data/2026.01.07.PAVE.Nutrition/MSdev_2026_01_07.Rdata")}
-if (!exists("absorb.global") || !exists("merged.absorb.forms")) {
-  absorb.global <- absorb.all.cnform %>%
-    filter(group %in% nutrient.groups) %>%
-    group_by(feature_id, polarity, group, absorb_pattern, c_absorb, n_absorb) %>%
-    summarize(
-      mean_absorb_ratio = mean(absorb_fraction, na.rm = TRUE),
-      .groups = "drop"
-    ) %>%
-    group_by(group, absorb_pattern, c_absorb, n_absorb) %>%
-    summarize(
-      sum_absorb_ratio = sum(mean_absorb_ratio, na.rm = TRUE),
-      .groups = "drop"
-    )
-
-  top10.per.group <- absorb.global %>%
-    filter(group %in% nutrient.groups.supplement) %>%
-    group_by(group) %>%
-    arrange(desc(sum_absorb_ratio), absorb_pattern) %>%
-    dplyr::slice_head(n = 10) %>%
-    ungroup()
-
-  merged.absorb.forms <- absorb.global %>%
-    filter(absorb_pattern %in% top10.per.group$absorb_pattern) %>%
-    group_by(absorb_pattern, c_absorb, n_absorb) %>%
-    summarize(total = sum(sum_absorb_ratio, na.rm = TRUE), .groups = "drop") %>%
-    arrange(desc(total))
+if (!exists("absorb.global") || !exists("merged.absorb")) {
+  absorb.global <- nutrition_summarize_absorb_global(
+    absorb.all.cnform,
+    nutrient_groups = nutrient.groups
+  )
+  top10.per.group <- nutrition_select_top_absorb_forms(
+    absorb.global,
+    groups = nutrient.groups.supplement,
+    top_n = 10,
+    rank_by = "weighted"
+  )
+  merged.absorb <- nutrition_merge_top_absorb_forms(
+    top10.per.group,
+    absorb.global,
+    rank_by = "weighted"
+  )
 }
 
 absorb.merged.hm <- absorb.global %>%
   filter(
     group %in% nutrient.groups.supplement,
-    absorb_pattern %in% merged.absorb.forms$absorb_pattern
+    absorb_pattern %in% merged.absorb$patterns
   )
 
 if (requireNamespace("ComplexHeatmap", quietly = TRUE)) {
   library(ComplexHeatmap)
 
   hm_mat.merged <- absorb.merged.hm %>%
-    select(absorb_pattern, group, sum_absorb_ratio) %>%
-    pivot_wider(names_from = group, values_from = sum_absorb_ratio) %>%
+    select(absorb_pattern, group, sum_weighted_absorb) %>%
+    pivot_wider(names_from = group, values_from = sum_weighted_absorb) %>%
     tibble::column_to_rownames("absorb_pattern") %>%
     as.matrix()
 
   hm_mat.merged <- hm_mat.merged[
-    merged.absorb.forms$absorb_pattern,
+    merged.absorb$patterns,
     nutrient.groups.supplement,
     drop = FALSE
   ]
@@ -412,7 +402,7 @@ if (requireNamespace("ComplexHeatmap", quietly = TRUE)) {
 
   ht.merged <- Heatmap(
     hm_mat.merged,
-    name = "Sum absorb\nratio",
+    name = "Sum weighted\nabsorb",
     col = col_fun.merged,
     cluster_rows = FALSE,
     cluster_columns = FALSE,
@@ -445,23 +435,23 @@ if (requireNamespace("ComplexHeatmap", quietly = TRUE)) {
           levels = nutrient.groups.supplement,
           labels = nutrient.labels.supplement
         ),
-        absorb_pattern = factor(absorb_pattern, levels = merged.absorb.forms$absorb_pattern)
+        absorb_pattern = factor(absorb_pattern, levels = merged.absorb$patterns)
       ),
-    aes(x = nutrient, y = absorb_pattern, fill = sum_absorb_ratio)
+    aes(x = nutrient, y = absorb_pattern, fill = sum_weighted_absorb)
   ) +
     geom_tile(color = "white", linewidth = 0.2) +
     scale_fill_gradient2(
       low = "#FFFFFF", mid = "#FFCD99", high = "#D13B2E",
-      midpoint = max(absorb.merged.hm$sum_absorb_ratio, na.rm = TRUE) / 2
+      midpoint = max(absorb.merged.hm$sum_weighted_absorb, na.rm = TRUE) / 2
     ) +
-    labs(x = NULL, y = "Absorb form", fill = "Sum absorb ratio") +
+    labs(x = NULL, y = "Absorb form", fill = "Sum weighted absorb") +
     theme_bw(base_size = 6) +
     theme(
       axis.text.x = element_text(angle = -35, hjust = 0),
       panel.grid = element_blank()
     )
 
-  MSdev::open_plot_win(p.cnform.hm, 2.5, 1.2 + length(merged.absorb.forms$absorb_pattern) * 0.08)
+  MSdev::open_plot_win(p.cnform.hm, 2.5, 1.2 + length(merged.absorb$patterns) * 0.08)
 }
 ```
 
