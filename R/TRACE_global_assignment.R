@@ -3,7 +3,8 @@
 # Spec defaults (no Matlab source in repo):
 # - Graph: full MS candidate net (CN_label + adduct + isotope + fragment), vertices = CN seeds
 # - Paths: all simple paths, capped at max_path_length (default 6)
-# - Blocking: net accumulated chemform (non-iso, simplified) in MS mass-diff lookup -> score 0
+# - Blocking: cumulative adduct chemform along path (fragment/isotope/CN edges ignored);
+#   blocked when non-zero net adduct change is not in the adduct mass-diff table
 # - Connection score: max(0, 1 - sum|mz.ppm|/ppm.dyn - sum|rt.diff|/rt.tol.dyn) on best non-blocked path
 # - Clustering: connected components on pairs with score >= connection_cutoff (default 0.5)
 
@@ -31,13 +32,10 @@
   list(ppm.dyn = ppm.dyn, rt.tol.dyn = rt.tol.dyn)
 }
 
-#' MS-derived chemform lookup for path blocking
+#' Adduct chemform lookup for path blocking
 #' @noRd
-.trace_ms_mass_diff_chemforms <- function(i.pol) {
-  ad <- get_adduct_mass_diff(polarity = i.pol)$chemform_diff
-  fg <- get_fragment_mass_diff()$chemform_diff
-  is <- get_iso_mass_diff()$chemform_diff
-  unique(chemform_simplify(c(ad, fg, is)))
+.trace_adduct_chemforms <- function(i.pol) {
+  unique(chemform_simplify(get_adduct_mass_diff(polarity = i.pol)$chemform_diff))
 }
 
 #' Build deduplicated candidate edge table (legacy PAVE integration)
@@ -109,17 +107,17 @@
     dplyr::mutate(eid = dplyr::row_number())
 }
 
-#' Pre-parse all unique chemform_diff strings and blocked set into numeric matrices.
+#' Pre-parse chemform_diff strings and valid adduct lookup into numeric matrices.
 #' Returns a list with:
 #'   $cd_mat  - named numeric matrix (rows = unique chemform strings, cols = elements)
-#'   $bl_rows - integer vector of row indices in cd_mat that are blocked
-#'   $eid_from, $eid_to, $eid_cd_row, $eid_mzppm, $eid_rtdiff - per-edge lookup vectors
+#'   $valid_adduct_rows - row indices in cd_mat for known adduct formula changes
+#'   $eid_from, $eid_to, $eid_cd_row, $eid_is_adduct, $eid_mzppm, $eid_rtdiff
 #' @noRd
-.trace_build_score_cache <- function(eda, blocked_chemforms) {
+.trace_build_score_cache <- function(eda, valid_adduct_chemforms) {
   cds <- as.character(eda$chemform_diff)
   cds[is.na(cds)] <- ""
   # parse all unique chemforms at once (single MSCC call)
-  all_cds <- unique(c(cds, blocked_chemforms, ""))
+  all_cds <- unique(c(cds, valid_adduct_chemforms, ""))
   raw_mat <- MSCC::chemform_parse(all_cds)
   # Strip isotope columns: fold their counts into the base element columns so
   # net-path comparison is on a simplified (non-isotope) element basis.
@@ -144,19 +142,19 @@
     raw_mat <- raw_mat[, !is_isotope_name(colnames(raw_mat)), drop = FALSE]
   }
   rownames(raw_mat) <- all_cds
-  # identify which rows correspond to blocked chemforms
-  bl_rows <- which(all_cds %in% blocked_chemforms)
-  # per-edge lookup
+  valid_adduct_rows <- which(all_cds %in% valid_adduct_chemforms)
   eid_cd_row <- match(cds, all_cds)
+  eid_type <- as.character(eda$type)
   list(
-    cd_mat      = raw_mat,
-    all_cds     = all_cds,
-    bl_rows     = bl_rows,
-    eid_cd_row  = eid_cd_row,
-    eid_from    = as.character(eda$from),
-    eid_to      = as.character(eda$to),
-    eid_mzppm   = abs(as.numeric(eda$mz.ppm)),
-    eid_rtdiff  = abs(as.numeric(eda$rt.diff))
+    cd_mat              = raw_mat,
+    all_cds             = all_cds,
+    valid_adduct_rows   = valid_adduct_rows,
+    eid_cd_row          = eid_cd_row,
+    eid_is_adduct       = eid_type == "adduct",
+    eid_from            = as.character(eda$from),
+    eid_to              = as.character(eda$to),
+    eid_mzppm           = abs(as.numeric(eda$mz.ppm)),
+    eid_rtdiff          = abs(as.numeric(eda$rt.diff))
   )
 }
 
@@ -179,14 +177,16 @@
       edge_idx[k] <- rev[1L]; dirs[k] <- -1L
     }
   }
-  # net element vector: sum(dir_k * cd_mat[edge_k, ])
+  # cumulative adduct form change: only adduct edges contribute
   cd_rows <- cache$eid_cd_row[edge_idx]
-  net_vec <- colSums(cache$cd_mat[cd_rows, , drop = FALSE] * dirs)
-  # blocked if net vector matches any blocked row
-  blocked <- any(vapply(cache$bl_rows, function(r) {
-    all(cache$cd_mat[r, ] == net_vec)
-  }, logical(1)))
-  if (blocked) return(list(score = 0, blocked = TRUE))
+  adduct_wt <- dirs * as.integer(cache$eid_is_adduct[edge_idx])
+  net_adduct_vec <- colSums(cache$cd_mat[cd_rows, , drop = FALSE] * adduct_wt)
+  if (any(net_adduct_vec != 0)) {
+    in_adduct_table <- any(vapply(cache$valid_adduct_rows, function(r) {
+      all(cache$cd_mat[r, ] == net_adduct_vec)
+    }, logical(1)))
+    if (!in_adduct_table) return(list(score = 0, blocked = TRUE))
+  }
   mz_sum <- sum(cache$eid_mzppm[edge_idx], na.rm = TRUE)
   rt_sum <- sum(cache$eid_rtdiff[edge_idx], na.rm = TRUE)
   score  <- max(0, 1 - mz_sum / ppm.dyn - rt_sum / rt.tol.dyn)
@@ -224,7 +224,7 @@
 .trace_global_assign_component <- function(
     ig,
     nodes,
-    blocked_chemforms,
+    valid_adduct_chemforms,
     ppm.dyn,
     rt.tol.dyn,
     max_path_length = 5L,
@@ -241,7 +241,7 @@
     ))
   }
   # Build numeric chemform cache once per component (single MSCC parse call).
-  cache <- .trace_build_score_cache(MSdev::edata(ig), blocked_chemforms)
+  cache <- .trace_build_score_cache(MSdev::edata(ig), valid_adduct_chemforms)
   score_mat <- matrix(0, n, n, dimnames = list(nodes, nodes))
   blocked_mat <- matrix(FALSE, n, n, dimnames = list(nodes, nodes))
   for (i in seq_len(n)) {
@@ -295,7 +295,7 @@
     max_path_length = 5L,
     connection_cutoff = 0.5) {
   tol <- .trace_dyn_tolerance(object, pol)
-  blocked_chemforms <- .trace_ms_mass_diff_chemforms(i.pol)
+  valid_adduct_chemforms <- .trace_adduct_chemforms(i.pol)
   conn_comp <- igraph::components(cn.seed.ig.full)$membership
   cn.seed <- as.character(unique(cn.seed))
   assign_list <- lapply(split(cn.seed, conn_comp[cn.seed]), function(nodes) {
@@ -303,7 +303,7 @@
     .trace_global_assign_component(
       sub_ig,
       nodes,
-      blocked_chemforms,
+      valid_adduct_chemforms,
       tol$ppm.dyn,
       tol$rt.tol.dyn,
       max_path_length,
@@ -356,8 +356,8 @@ TRACE_score_mat_component <- function(
   ig <- MSdev::igraph_filter_vertex(ig_full, nodes)
 
   tol <- .trace_dyn_tolerance(object, pol)
-  blocked_chemforms <- .trace_ms_mass_diff_chemforms(i.pol)
-  cache <- .trace_build_score_cache(MSdev::edata(ig), blocked_chemforms)
+  valid_adduct_chemforms <- .trace_adduct_chemforms(i.pol)
+  cache <- .trace_build_score_cache(MSdev::edata(ig), valid_adduct_chemforms)
 
   n <- length(nodes)
   score_mat <- matrix(0, n, n, dimnames = list(nodes, nodes))

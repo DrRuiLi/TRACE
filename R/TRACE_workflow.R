@@ -392,8 +392,9 @@ TRACE_dynamic_filter <- function(object, i.pol) {
 #'
 #' Partitions the CN seed graph by MS-derived edge connectivity, then applies
 #' PAVE-style global assignment within each component: all simple paths between
-#' node pairs are scored using accumulated m/z and RT error; paths whose net
-#' chemical formula change matches the MS mass-difference table are blocked.
+#' node pairs are scored using accumulated m/z and RT error; paths whose
+#' cumulative adduct formula change (fragment/isotope/CN edges excluded) is not
+#' in the adduct mass-difference table are blocked.
 #' Nodes are clustered into mutually compatible subnetworks using connection
 #' scores.
 #'
