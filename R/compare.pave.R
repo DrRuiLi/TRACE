@@ -4,6 +4,85 @@
   !is.na(x) & x != "Blank/noise"
 }
 
+#' Map PAVE \code{pave_seed} (m/z) to vertex group labels for network plots
+#'
+#' In PAVE exports, \code{pave_seed} is the metabolite seed m/z, not a feature
+#' ID. Each \code{pave_seed} is matched to the closest m/z in
+#' \code{pave.trace.merged} (within \code{ppm}) to obtain a seed
+#' \code{feature_id} group label. PAVE metabolites without \code{pave_seed} are
+#' their own seed (\code{feature_id}). Other nodes without \code{pave_seed} are
+#' labeled \code{"noise"} (plot as grey). When no merged feature is within
+#' \code{ppm}, features cluster by the seed m/z string.
+#'
+#' @param feature_id Feature IDs for nodes in the demo subgraph.
+#' @param pave_seed PAVE seed m/z per node (may be \code{NA}).
+#' @param pave.trace.merged Merged PAVE/TRACE table used for m/z lookup.
+#' @param type_pave PAVE annotation type per node (used to detect metabolites).
+#' @param ppm Maximum ppm error when matching \code{pave_seed} to a feature m/z.
+#' @param mz_col Column in \code{pave.trace.merged} with m/z values.
+#' @param id_col Column in \code{pave.trace.merged} with feature IDs.
+#'
+#' @returns Named character vector of group labels keyed by \code{feature_id}.
+#'   Value \code{"noise"} means no PAVE seed.
+#' @export
+map_pave_seed_vertex_group <- function(
+    feature_id,
+    pave_seed,
+    pave.trace.merged,
+    type_pave = NULL,
+    ppm = 10,
+    mz_col = "mz_pave",
+    id_col = "feature_id") {
+  feature_id <- as.character(feature_id)
+  group <- rep("noise", length(feature_id))
+  names(group) <- feature_id
+  pave_seed_num <- suppressWarnings(as.numeric(pave_seed))
+
+  if (!is.null(type_pave)) {
+    type_norm <- tolower(as.character(type_pave))
+    type_norm[is.na(type_norm)] <- ""
+    self_seed <- type_norm == "metabolite" &
+      (is.na(pave_seed) | !is.finite(pave_seed_num))
+    group[self_seed] <- feature_id[self_seed]
+  }
+
+  if (!mz_col %in% names(pave.trace.merged) || !id_col %in% names(pave.trace.merged)) {
+    stop("pave.trace.merged must contain ", id_col, " and ", mz_col, ".", call. = FALSE)
+  }
+
+  ref_id <- as.character(pave.trace.merged[[id_col]])
+  ref_mz <- as.numeric(pave.trace.merged[[mz_col]])
+  ok <- is.finite(ref_mz) & ref_mz > 0 & !is.na(ref_id) & nzchar(ref_id)
+  ref_id <- ref_id[ok]
+  ref_mz <- ref_mz[ok]
+  if (!length(ref_id)) {
+    return(group)
+  }
+
+  has_seed <- !is.na(pave_seed) & is.finite(pave_seed_num)
+  if (!any(has_seed)) {
+    return(group)
+  }
+
+  for (i in which(has_seed)) {
+    fid <- feature_id[i]
+    seed_mz <- pave_seed_num[i]
+    if (!is.finite(seed_mz) || seed_mz <= 0) {
+      group[fid] <- "noise"
+      next
+    }
+    ppm_err <- abs(ref_mz - seed_mz) / seed_mz * 1e6
+    j <- which.min(ppm_err)
+    if (length(j) && is.finite(min(ppm_err)) && min(ppm_err) <= ppm) {
+      group[fid] <- ref_id[j]
+    } else {
+      group[fid] <- sprintf("mz %.4f", seed_mz)
+    }
+  }
+
+  group
+}
+
 #' Classify PAVE/TRACE features into CN comparison seed groups
 #'
 #' @param pave.trace.merged Data frame from a PAVE/TRACE feature merge.

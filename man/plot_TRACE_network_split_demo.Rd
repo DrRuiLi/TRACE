@@ -7,12 +7,18 @@
 plot_TRACE_network_split_demo(
   demo,
   file = NULL,
-  group_colors = c("#00A087", "#4DBBD5"),
+  group_colors = NULL,
   vertex_group = NULL,
   vertex_label_data = NULL,
   vertex_label_id_prefix = "FT",
   show_edge_label = TRUE,
   layout = "fr",
+  layout_coords = NULL,
+  muted_style = FALSE,
+  show_legend = FALSE,
+  legend_title = "Group",
+  plot_title = NULL,
+  plot_subtitle = NULL,
   ...
 )
 }
@@ -24,7 +30,22 @@ from cache.}
 
 \item{group_colors}{Named vector of colors for assignment groups.}
 
-\item{layout}{Layout passed to [ggraph::create_layout()].}
+\item{layout}{Layout passed to [ggraph::create_layout()] when `layout_coords`
+is `NULL`.}
+
+\item{layout_coords}{Optional data.frame with columns `name`, `x`, `y` from
+[compute_TRACE_network_layout()]. Reuse across panels for aligned layouts.}
+
+\item{muted_style}{If `TRUE`, draw grey semi-transparent edges and borders so
+node labels remain readable.}
+
+\item{show_legend}{If `TRUE`, show a fill legend for node groups.}
+
+\item{legend_title}{Legend title when `show_legend = TRUE`.}
+
+\item{plot_title}{Optional plot title; defaults to the demo component label.}
+
+\item{plot_subtitle}{Optional subtitle; defaults to cached compound subtitle.}
 
 \item{...}{Passed to [ggplot2::theme()].}
 }

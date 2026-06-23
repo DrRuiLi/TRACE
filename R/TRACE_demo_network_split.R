@@ -253,10 +253,12 @@
     elabs[i] <- if (nrow(row) && nzchar(row$label[1])) as.character(row$label[1]) else ""
     g1 <- vgrp[f]
     g2 <- vgrp[t]
-    ecols[i] <- if (!is.na(g1) && !is.na(g2) && g1 == g2) {
-      group_colors[[as.character(g1)]]
+    same_group <- !is.na(g1) && !is.na(g2) && nzchar(g1) && g1 == g2
+    gcol <- group_colors[[as.character(g1)]]
+    ecols[i] <- if (same_group && !is.null(gcol) && !is.na(gcol) && nzchar(gcol)) {
+      gcol
     } else {
-      "grey55"
+      "grey70"
     }
   }
   list(label = elabs, color = ecols)
@@ -277,6 +279,60 @@
   paste0(formula, "\n", type, "\n", mz)
 }
 
+#' Assign group colors: ggsci NPG palette; noise / unassigned stay grey
+#' @noRd
+.trace_resolve_group_colors <- function(grp_levels, group_colors = NULL) {
+  grey_groups <- intersect(grp_levels, c("noise", "Unassigned"))
+  other <- setdiff(grp_levels, grey_groups)
+
+  if (is.null(group_colors)) {
+    group_colors <- stats::setNames(character(0), character(0))
+  }
+
+  missing_other <- setdiff(other, names(group_colors))
+  npg_cols <- if (length(missing_other)) {
+    npg <- if (requireNamespace("ggsci", quietly = TRUE)) {
+      ggsci::pal_npg()(max(length(missing_other), 3L))[seq_along(missing_other)]
+    } else {
+      grDevices::hcl.colors(length(missing_other), palette = "Dark 3")
+    }
+    stats::setNames(npg, missing_other)
+  } else {
+    stats::setNames(character(0), character(0))
+  }
+
+  group_colors <- c(group_colors, npg_cols)
+  for (g in grey_groups) {
+    group_colors[[g]] <- if (g == "noise") "grey60" else "grey70"
+  }
+  group_colors[grp_levels]
+}
+
+#' Compute fixed node coordinates for comparable network plots
+#'
+#' Run once on the demo graph and pass the result as `layout_coords` to
+#' [plot_TRACE_network_split_demo()] so TRACE and PAVE panels share layout.
+#'
+#' @param ig An `igraph` object.
+#' @param layout Layout algorithm passed to [ggraph::create_layout()].
+#'
+#' @returns A data.frame with columns `name`, `x`, and `y`.
+#' @export
+compute_TRACE_network_layout <- function(ig, layout = "fr") {
+  if (!requireNamespace("ggraph", quietly = TRUE) ||
+      !requireNamespace("tidygraph", quietly = TRUE)) {
+    stop("compute_TRACE_network_layout() requires ggraph and tidygraph.", call. = FALSE)
+  }
+  g <- tidygraph::as_tbl_graph(ig)
+  lay <- ggraph::create_layout(g, layout = layout)
+  data.frame(
+    name = as.character(lay$name),
+    x = lay$x,
+    y = lay$y,
+    stringsAsFactors = FALSE
+  )
+}
+
 #' Build ggplot network plot for split-network demo
 #' @noRd
 .trace_ggplot_network_split_demo <- function(
@@ -284,7 +340,13 @@
     title,
     subtitle = NULL,
     layout = "fr",
+    layout_coords = NULL,
+    vertex_group = NULL,
+    group_colors = NULL,
     show_edge_label = TRUE,
+    muted_style = FALSE,
+    show_legend = FALSE,
+    legend_title = "Group",
     ...) {
   if (!requireNamespace("ggraph", quietly = TRUE) ||
       !requireNamespace("tidygraph", quietly = TRUE) ||
@@ -296,10 +358,38 @@
   }
 
   g <- tidygraph::as_tbl_graph(ig)
-  lay <- ggraph::create_layout(g, layout = layout)
-  vpos <- as.data.frame(lay[, c("x", "y")])
-  vpos$name <- as.character(lay$name)
+  vnames <- as.character(igraph::V(ig)$name)
 
+  if (is.null(layout_coords)) {
+    lay <- ggraph::create_layout(g, layout = layout)
+  } else {
+    if (!all(c("name", "x", "y") %in% names(layout_coords))) {
+      stop("layout_coords must contain columns: name, x, y", call. = FALSE)
+    }
+    coords <- layout_coords[match(vnames, as.character(layout_coords$name)), , drop = FALSE]
+    if (any(is.na(coords$x)) || any(is.na(coords$y))) {
+      stop("layout_coords is missing coordinates for some graph vertices.", call. = FALSE)
+    }
+    lay <- ggraph::create_layout(
+      g,
+      layout = "manual",
+      x = coords$x,
+      y = coords$y
+    )
+  }
+
+  if (is.null(vertex_group)) {
+    vertex_group <- stats::setNames(rep(NA_character_, length(vnames)), vnames)
+  } else if (is.null(names(vertex_group))) {
+    if (length(vertex_group) != length(vnames)) {
+      stop("vertex_group must be named or match the number of vertices.", call. = FALSE)
+    }
+    names(vertex_group) <- vnames
+  }
+  lay$group <- as.character(vertex_group[as.character(lay$name)])
+  lay$label <- igraph::V(ig)$label[match(as.character(lay$name), vnames)]
+
+  vpos <- data.frame(name = as.character(lay$name), x = lay$x, y = lay$y, stringsAsFactors = FALSE)
   ends <- igraph::ends(ig, igraph::E(ig), names = TRUE)
   elabs <- igraph::E(ig)$label
   if (!isTRUE(show_edge_label)) {
@@ -308,46 +398,85 @@
   eda <- data.frame(
     from = ends[, 1],
     to = ends[, 2],
-    color = igraph::E(ig)$color,
     label = elabs,
     stringsAsFactors = FALSE
   )
-  eda <- merge(eda, vpos, by.x = "from", by.y = "name", suffixes = c("", ".from"))
-  eda <- merge(eda, vpos, by.x = "to", by.y = "name", suffixes = c("", ".to"))
-  eda$x <- (eda$x + eda$x.to) / 2
-  eda$y <- (eda$y + eda$y.to) / 2
-  eda$label <- ifelse(nzchar(eda$label), eda$label, NA_character_)
+  if (nrow(eda)) {
+    eda <- merge(eda, vpos, by.x = "from", by.y = "name", suffixes = c("", ".from"))
+    eda <- merge(eda, vpos, by.x = "to", by.y = "name", suffixes = c("", ".to"))
+    eda$x <- (eda$x + eda$x.to) / 2
+    eda$y <- (eda$y + eda$y.to) / 2
+    eda$label <- ifelse(nzchar(eda$label), eda$label, NA_character_)
+  }
+
+  use_mapped_fill <- isTRUE(muted_style) || isTRUE(show_legend)
+  edge_cols <- igraph::E(ig)$color
+  if (isTRUE(muted_style)) {
+    cross <- grepl("^grey", edge_cols)
+    edge_cols[cross] <- grDevices::adjustcolor("grey70", alpha.f = 0.55)
+    edge_cols[!cross] <- grDevices::adjustcolor(edge_cols[!cross], alpha.f = 0.75)
+  }
 
   p <- ggraph::ggraph(lay) +
     ggraph::geom_edge_link(
-      ggplot2::aes(color = I(color)),
-      arrow = grid::arrow(length = grid::unit(2, "mm"), type = "closed"),
-      end_cap = ggraph::circle(4, "mm"),
-      linewidth = 0.9
-    ) +
-    ggplot2::geom_text(
+      ggplot2::aes(color = I(edge_cols)),
+      arrow = grid::arrow(length = grid::unit(if (muted_style) 1.5 else 2, "mm"), type = "closed"),
+      end_cap = ggraph::circle(if (muted_style) 3 else 4, "mm"),
+      linewidth = if (muted_style) 0.35 else 0.9
+    )
+
+  if (nrow(eda)) {
+    p <- p + ggplot2::geom_text(
       data = eda,
       ggplot2::aes(x = x, y = y, label = label),
-      size = 2.2,
-      color = "grey30",
+      size = if (muted_style) 2 else 2.2,
+      color = if (muted_style) "grey40" else "grey30",
       na.rm = TRUE
-    ) +
-    ggraph::geom_node_point(
-      ggplot2::aes(fill = I(color)),
-      shape = 21,
-      color = "black",
-      size = 8
-    ) +
+    )
+  }
+
+  if (use_mapped_fill) {
+    p <- p +
+      ggraph::geom_node_point(
+        ggplot2::aes(fill = group),
+        shape = 21,
+        color = if (muted_style) grDevices::adjustcolor("grey55", alpha.f = 0.65) else "black",
+        size = if (muted_style) 6 else 8,
+        alpha = if (muted_style) 0.4 else 1,
+        stroke = if (muted_style) 0.35 else 0.5
+      ) +
+      ggplot2::scale_fill_manual(
+        values = group_colors,
+        name = legend_title,
+        drop = FALSE,
+        guide = if (show_legend) "legend" else "none"
+      )
+  } else {
+    lay$node_fill <- group_colors[lay$group]
+    p <- p +
+      ggraph::geom_node_point(
+        ggplot2::aes(fill = I(lay$node_fill)),
+        shape = 21,
+        color = "black",
+        size = 8
+      )
+  }
+
+  p <- p +
     ggraph::geom_node_text(
       ggplot2::aes(label = label),
-      size = 2.2,
-      lineheight = 0.85
+      size = if (muted_style) 2.4 else 2.2,
+      lineheight = 0.85,
+      color = if (muted_style) "grey10" else "black"
     ) +
     ggplot2::theme_void() +
     ggplot2::labs(title = title, subtitle = subtitle) +
     ggplot2::theme(
       plot.title = ggplot2::element_text(size = 10, face = "bold", hjust = 0.5),
       plot.subtitle = ggplot2::element_text(size = 7, hjust = 0.5, lineheight = 0.95),
+      legend.position = if (show_legend) "right" else "none",
+      legend.title = ggplot2::element_text(size = 8),
+      legend.text = ggplot2::element_text(size = 7),
       ...
     )
   p
@@ -362,7 +491,16 @@
 #'   from cache.
 #' @param file Optional path to save the plot (pdf/png depending on extension).
 #' @param group_colors Named vector of colors for assignment groups.
-#' @param layout Layout passed to [ggraph::create_layout()].
+#' @param layout Layout passed to [ggraph::create_layout()] when `layout_coords`
+#'   is `NULL`.
+#' @param layout_coords Optional data.frame with columns `name`, `x`, `y` from
+#'   [compute_TRACE_network_layout()]. Reuse across panels for aligned layouts.
+#' @param muted_style If `TRUE`, draw grey semi-transparent edges and borders so
+#'   node labels remain readable.
+#' @param show_legend If `TRUE`, show a fill legend for node groups.
+#' @param legend_title Legend title when `show_legend = TRUE`.
+#' @param plot_title Optional plot title; defaults to the demo component label.
+#' @param plot_subtitle Optional subtitle; defaults to cached compound subtitle.
 #' @param ... Passed to [ggplot2::theme()].
 #'
 #' @returns Invisibly, a `ggplot` object suitable for [MSdev::open_plot_win()].
@@ -370,12 +508,18 @@
 plot_TRACE_network_split_demo <- function(
     demo,
     file = NULL,
-    group_colors = c("#00A087", "#4DBBD5"),
+    group_colors = NULL,
     vertex_group = NULL,
     vertex_label_data = NULL,
     vertex_label_id_prefix = "FT",
     show_edge_label = TRUE,
     layout = "fr",
+    layout_coords = NULL,
+    muted_style = FALSE,
+    show_legend = FALSE,
+    legend_title = "Group",
+    plot_title = NULL,
+    plot_subtitle = NULL,
     ...) {
   if (is.null(demo) || is.null(demo$ig)) {
     stop("Invalid network split demo: missing igraph object.")
@@ -414,16 +558,9 @@ plot_TRACE_network_split_demo <- function(
   }
   grp_levels <- unique(grp)
 
-  if (is.null(names(group_colors)) || !all(grp_levels %in% names(group_colors))) {
-    auto_cols <- grDevices::hcl.colors(length(grp_levels), palette = "Dark 3")
-    names(auto_cols) <- grp_levels
-    missing <- setdiff(grp_levels, names(group_colors))
-    group_colors <- c(group_colors, auto_cols[missing])
-  }
-  if ("Unassigned" %in% grp_levels && is.null(group_colors[["Unassigned"]])) {
-    group_colors[["Unassigned"]] <- "grey70"
-  }
+  group_colors <- .trace_resolve_group_colors(grp_levels, group_colors)
   if (!is.null(vertex_group) && length(na_idx)) {
+    na_cols <- grDevices::hcl.colors(length(na_idx), palette = "Pastel 1")
     for (k in seq_along(na_idx)) {
       tag <- paste0(".na.", vnames[na_idx[k]])
       group_colors[[tag]] <- na_cols[k]
@@ -477,12 +614,18 @@ plot_TRACE_network_split_demo <- function(
   igraph::E(ig)$color <- estyle$color
   igraph::E(ig)$label <- estyle$label
 
-  title <- sprintf(
-    "TRACE assignment split (component %s: %s)",
-    demo$conn.component,
-    paste(unique(demo$assign.groups), collapse = " vs ")
-  )
-  subtitle <- if (!is.null(demo$subtitle) && nzchar(demo$subtitle)) {
+  title <- if (!is.null(plot_title) && nzchar(plot_title)) {
+    plot_title
+  } else {
+    sprintf(
+      "TRACE assignment split (component %s: %s)",
+      demo$conn.component,
+      paste(unique(demo$assign.groups), collapse = " vs ")
+    )
+  }
+  subtitle <- if (!is.null(plot_subtitle)) {
+    plot_subtitle
+  } else if (!is.null(demo$subtitle) && nzchar(demo$subtitle)) {
     demo$subtitle
   } else if (!is.null(demo$group_compounds)) {
     .trace_format_split_demo_subtitle(demo$group_compounds)
@@ -495,7 +638,13 @@ plot_TRACE_network_split_demo <- function(
     title = title,
     subtitle = subtitle,
     layout = layout,
+    layout_coords = layout_coords,
+    vertex_group = vgrp,
+    group_colors = group_colors,
     show_edge_label = show_edge_label,
+    muted_style = muted_style,
+    show_legend = show_legend,
+    legend_title = legend_title,
     ...
   )
 

@@ -72,6 +72,12 @@ MSdev_save(object)
 
 ### 1.4 TRACE analysis
 
+re-network assignment
+``` {r}
+object <- TRACE_network_assignment(object, i.pol = 0)
+object <- TRACE_annotate(object, i.pol = 0)
+```
+
 ```{r}
 #object <- TRACE_workflow(object)
 TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx")
@@ -239,7 +245,7 @@ show the proportion of false positive of adduct/fragment/isotope, the false posi
 
 ```{r}
 res.afis.fp <- .compare_pave_afis_false_positive_plot(pave.trace.merged)
-open_plot_win(res.afis.fp$plot, 2, 2)
+open_plot_win(res.afis.fp$plot, 1.5, 2)
 ```
 
 ### 2.3 Annotation change composition
@@ -285,35 +291,61 @@ p <- plot_compare_pave_fragment(pave.trace.merged, object, i.pol = 0)
 open_plot_win(p, 5, 2.5)
 ```
 
-#### 2.3.4. Graph compare
+#### 2.3.4 Graph compare
 
-plot the network assignment graph of TRACE and PAVE, and compare the difference.
-
-use the cache/demo1.rds to plot network:
-
-1.  p1 fill with TRACE metabolite group
-2.  p2 fill with PAVE metabolite group
-3.  for the metabolite group, if the seed is NA, assign distinct color to the node
-4.  add arg 'show_edge_label', for trace, its TRUE, for pave, its FALSE
-
-update 'plot_TRACE_network_split_demo':
-
-1.  the font should be "Arial" 2. the node label shoud like: "C26N1\nAdduct\n552.3309" (formula\ntype\nmz)
+Plot the same cached network-split demo twice: TRACE colors nodes by
+`assign.seed` (network-assignment group); PAVE colors by metabolite seed m/z.
+Each `pave_seed` is matched to the closest m/z in `pave.trace.merged` to
+obtain a seed `feature_id`; nodes without `pave_seed` are labeled `noise`
+(grey). Layout `(x, y)` is computed once with `compute_TRACE_network_layout()`
+and reused so the two panels are directly comparable. Edges and node borders are drawn in
+grey with partial transparency so formula / type / m/z labels stay readable.
+Edge relationship labels (adduct / fragment / isotope) are shown on the TRACE
+panel.
 
 ```{r}
-demo <- TRACE_load_network_split_demo(demo_id = 1, cache_dir = "C:/Users/91879/OneDrive/Code/R/Package/TRACE/cache")
-nodes <- as.integer(igraph::V(demo$ig)$name)
+demo <- TRACE_load_network_split_demo(
+  demo_id = 13,
+  cache_dir = "C:/Users/91879/OneDrive/Code/R/Package/TRACE/cache"
+)
+layout_xy <- compute_TRACE_network_layout(demo$ig)
 
-lab.df <- pave.trace.merged %>%
-  dplyr::filter(feature_id %in% nodes) %>%
-  dplyr::mutate(feature_id = as.character(feature_id))
+vertex_data <- demo$vertex_data %>%
+  dplyr::mutate(
+    feature_id = as.character(name),
+    trace_seed = as.character(assign.seed)
+  )
 
+lab.df <- vertex_data %>%
+  dplyr::left_join(
+    pave.trace.merged %>%
+      dplyr::mutate(feature_id = as.character(feature_id)) %>%
+      dplyr::select(
+        feature_id,
+        formula_pave, type_pave, mz_pave,
+        formula_trace, type_trace, mz_trace,
+        pave_seed
+      ),
+    by = "feature_id"
+  )
 
-# p1: color by TRACE metabolite group (seed_trace)
+lab.df$pave_group <- map_pave_seed_vertex_group(
+  feature_id = lab.df$feature_id,
+  pave_seed = lab.df$pave_seed,
+  pave.trace.merged = pave.trace.merged,
+  type_pave = lab.df$type_pave
+)
+
 p1 <- plot_TRACE_network_split_demo(
   demo,
+  plot_title = "TRACE network assignment",
+  plot_subtitle = "",
+  layout_coords = layout_xy,
+  muted_style = TRUE,
+  show_legend = TRUE,
+  legend_title = "TRACE seed",
   show_edge_label = TRUE,
-  vertex_group = setNames(lab.df$seed_trace, lab.df$feature_id),
+  vertex_group = stats::setNames(lab.df$trace_seed, lab.df$feature_id),
   vertex_label_data = data.frame(
     feature_id = lab.df$feature_id,
     formula = lab.df$formula_trace,
@@ -323,11 +355,16 @@ p1 <- plot_TRACE_network_split_demo(
   )
 )
 
-# p2: color by PAVE metabolite group (pave_seed)
 p2 <- plot_TRACE_network_split_demo(
   demo,
+  plot_title = "PAVE metabolite grouping",
+  plot_subtitle = "",
+  layout_coords = layout_xy,
+  muted_style = TRUE,
+  show_legend = TRUE,
+  legend_title = "PAVE seed ",
   show_edge_label = FALSE,
-  vertex_group = setNames(lab.df$pave_seed, lab.df$feature_id),
+  vertex_group = lab.df$pave_group,
   vertex_label_data = data.frame(
     feature_id = lab.df$feature_id,
     formula = lab.df$formula_pave,
@@ -337,5 +374,10 @@ p2 <- plot_TRACE_network_split_demo(
   )
 )
 
-open_plot_win(p1 | p2, 10, 5)
+open_plot_win(
+  p1 + p2 + patchwork::plot_layout(guides = "collect") &
+    ggplot2::theme(legend.position = "right"),
+  10,
+  5
+)
 ```
