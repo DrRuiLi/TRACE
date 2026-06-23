@@ -480,6 +480,67 @@ TRACE_network_assignment <- function(
   object
 }
 
+#' Fragment-edge rows where \code{x.name} is the daughter (lower m/z) ion
+#'
+#' MS fragment edges may be stored in either direction; the parent ion is always
+#' the higher m/z node (parent loses the neutral fragment).
+#' @noRd
+.trace_fragment_daughter_edges <- function(edges, x.name) {
+  empty <- data.frame(
+    type = character(),
+    eid = integer(),
+    adduct = character(),
+    seed = character(),
+    fragment = character(),
+    element = character(),
+    stringsAsFactors = FALSE
+  )
+  if (is.null(edges) || !nrow(edges)) {
+    return(empty)
+  }
+
+  edges <- as.data.frame(edges, stringsAsFactors = FALSE)
+  edges <- edges[
+    edges$type == "fragment" &
+      (as.character(edges$from) == x.name | as.character(edges$to) == x.name),
+    ,
+    drop = FALSE
+  ]
+  if (!nrow(edges)) {
+    return(empty)
+  }
+
+  from_mz <- as.numeric(edges$from.mz)
+  to_mz <- as.numeric(edges$to.mz)
+  from_id <- as.character(edges$from)
+  to_id <- as.character(edges$to)
+  parent_id <- ifelse(from_mz >= to_mz, from_id, to_id)
+  daughter_id <- ifelse(from_mz >= to_mz, to_id, from_id)
+  edges <- edges[daughter_id == x.name, , drop = FALSE]
+  if (!nrow(edges)) {
+    return(empty)
+  }
+
+  from_mz <- as.numeric(edges$from.mz)
+  to_mz <- as.numeric(edges$to.mz)
+  from_id <- as.character(edges$from)
+  parent_id <- ifelse(from_mz >= to_mz, from_id, as.character(edges$to))
+  daughter_is_from <- from_id == x.name
+  data.frame(
+    type = as.character(edges$type),
+    eid = edges$eid,
+    adduct = ifelse(
+      daughter_is_from,
+      as.character(edges$adduct.from),
+      as.character(edges$adduct.to)
+    ),
+    seed = parent_id,
+    fragment = as.character(edges$fragment),
+    element = as.character(edges$element),
+    stringsAsFactors = FALSE
+  )
+}
+
 #' Annotate TRACE seed network candidates and finalize TRACE result
 #'
 #' @param object MSdev object.
@@ -575,19 +636,16 @@ TRACE_annotate <- function(
     x.candi.rtd <- x.candi.rt - cn.seed.vdata$rt[x]
 
     x.from <- MSdev::edata(cn.seed.ig) %>%
-      dplyr::filter(type != "isotope", from == x.name) %>%
+      dplyr::filter(type != "isotope", type != "fragment", from == x.name) %>%
       dplyr::select(type, eid, adduct = adduct.from, seed = to, fragment, element)
 
     x.to <- MSdev::edata(cn.seed.ig) %>%
       dplyr::filter(type != "fragment", to == x.name) %>%
       dplyr::select(type, eid, adduct = adduct.to, seed = from, fragment, element)
 
-    # Incoming fragment edges (parent -> daughter); excluded from x.to above.
-    x.fg_in <- MSdev::edata(cn.seed.ig) %>%
-      dplyr::filter(type == "fragment", to == x.name) %>%
-      dplyr::select(type, eid, adduct = adduct.to, seed = from, fragment, element)
+    x.fg <- .trace_fragment_daughter_edges(MSdev::edata(cn.seed.ig), x.name)
 
-    anno <- dplyr::bind_rows(x.fg_in, x.to, x.from)
+    anno <- dplyr::bind_rows(x.fg, x.to, x.from)
     ad.score <- ifelse(x.candi.adduct %in% anno$adduct, 1, 0)
     rt.score <- 1 - abs(x.candi.rtd) / 1000
     rt.score[rt.score < 0] <- 0

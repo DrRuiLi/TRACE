@@ -957,6 +957,33 @@ chemform_remove_iso <- function(chemform){
 
 
 
+#' Path to the TRACE adduct table xlsx in \code{data/}
+#' @noRd
+.trace_adduct_table_file <- function() {
+  installed <- system.file("data", "adduct.table.xlsx", package = "TRACE")
+  if (nzchar(installed) && file.exists(installed)) {
+    return(installed)
+  }
+  root <- Sys.getenv("TRACE_PKG_ROOT", unset = "")
+  if (nzchar(root)) {
+    dev_path <- file.path(root, "data", "adduct.table.xlsx")
+    if (file.exists(dev_path)) {
+      return(normalizePath(dev_path, winslash = "/", mustWork = TRUE))
+    }
+  }
+  stop("Could not find data/adduct.table.xlsx.", call. = FALSE)
+}
+
+#' Read TRACE adduct table from packaged xlsx
+#' @noRd
+.trace_read_adduct_table <- function() {
+  tab <- openxlsx::read.xlsx(.trace_adduct_table_file())
+  tab$Formula_add <- as.character(tab$Formula_add)
+  tab$Formula_ded <- as.character(tab$Formula_ded)
+  tab$Formula_diff <- as.character(tab$Formula_diff)
+  tab
+}
+
 
 
 get_adduct_mass_diff <- function(polarity = 0,direction = 1){
@@ -964,7 +991,7 @@ get_adduct_mass_diff <- function(polarity = 0,direction = 1){
 
   pol <- ifelse(polarity==1,"positive","negative")
 
-  adduct.table <- MSCC::adduct.table |>
+  adduct.table <- .trace_read_adduct_table() |>
     dplyr::filter(
       Ion_mode == pol,
       Multi == 1,

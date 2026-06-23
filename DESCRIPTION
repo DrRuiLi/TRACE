@@ -22,6 +22,7 @@ VignetteBuilder: knitr
 Config/roxygen2/version: 8.0.0
 Imports: 
     data.table,
-    MSdev
+    MSdev,
+    openxlsx
 Depends: 
     R (>= 4.1.0)

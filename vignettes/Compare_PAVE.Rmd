@@ -79,7 +79,7 @@ object <- TRACE_annotate(object, i.pol = 0)
 ```
 
 ```{r}
-#object <- TRACE_workflow(object)
+object <- TRACE_workflow(object)
 TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx")
 MSdev_save(object)
 ```
@@ -319,13 +319,7 @@ vertex_data <- demo$vertex_data %>%
 lab.df <- vertex_data %>%
   dplyr::left_join(
     pave.trace.merged %>%
-      dplyr::mutate(feature_id = as.character(feature_id)) %>%
-      dplyr::select(
-        feature_id,
-        formula_pave, type_pave, mz_pave,
-        formula_trace, type_trace, mz_trace,
-        pave_seed
-      ),
+      dplyr::mutate(feature_id = as.character(feature_id)) ,
     by = "feature_id"
   )
 
@@ -394,38 +388,58 @@ ppm.by.vertex <- dplyr::bind_rows(
   dplyr::group_by(feature_id) %>%
   dplyr::summarise(ppm = stats::median(mz_ppm, na.rm = TRUE), .groups = "drop")
 
+xcms.xcms <- object@xcmsData$NegativeMS1
+xcms.val <- xcms::featureValues(xcms.xcms, missing = 0, value = "maxo")
+sample.idx <- Biobase::pData(xcms.xcms)$sample.type %in%
+  c("S12C14N", "S12C15N", "S13C14N", "S13C15N")
+feature.intensity <- stats::setNames(
+  rowMeans(xcms.val[, sample.idx, drop = FALSE], na.rm = TRUE),
+  as.character(seq_len(nrow(xcms.val)))
+)
+
 bar.df <- vertex_data %>%
   dplyr::transmute(
     feature_id = as.character(feature_id),
     trace_seed = as.character(trace_seed),
-    rt = as.numeric(rt)
+    rt = as.numeric(rt),
+    mz = as.numeric(mz)
   ) %>%
   dplyr::left_join(ppm.by.vertex, by = "feature_id") %>%
+  dplyr::mutate(
+    intensity = as.numeric(feature.intensity[feature_id]),
+    log_intensity = log10(intensity)
+  ) %>%
   dplyr::arrange(rt) %>%
-  dplyr::mutate(feature_id = factor(feature_id, levels = feature_id))
+  dplyr::mutate(
+    mz_label = factor(
+      sprintf("%.4f", mz),
+      levels = sprintf("%.4f", mz)
+    )
+  )
 
 bar.long <- bar.df %>%
   tidyr::pivot_longer(
-    cols = c(rt, ppm),
+    cols = c(rt, ppm, log_intensity),
     names_to = "metric",
     values_to = "value"
   ) %>%
   dplyr::mutate(
     metric = factor(
       metric,
-      levels = c("rt", "ppm"),
-      labels = c("RT (s)", "m/z error (ppm)")
+      levels = c("rt", "ppm", "log_intensity"),
+      labels = c("RT (s)", "m/z error (ppm)", "log10(intensity)")
     )
   )
 
-p <- ggplot2::ggplot(bar.long, ggplot2::aes(x = feature_id, y = value, col = trace_seed)) +
+p <- ggplot2::ggplot(bar.long, ggplot2::aes(x = mz_label, y = value, col = trace_seed)) +
   ggplot2::geom_point(size = 2) +
   ggplot2::facet_grid(metric ~ ., scales = "free_y") +
   ggplot2::labs(
     x = NULL,
     y = NULL,
-    fill = "TRACE seed"
+    col = "TRACE seed"
   ) +
+  ggplot2::scale_color_manual(values = c("#59BFD8", "#EC7868")) +
   ggplot2::theme_bw(base_size = 6) +
   ggplot2::theme(
     axis.text.x = ggplot2::element_text(
@@ -433,7 +447,5 @@ p <- ggplot2::ggplot(bar.long, ggplot2::aes(x = feature_id, y = value, col = tra
     legend.position = "none"
   )
 
-open_plot_win(p, 2, 1.5)
-
-
+open_plot_win(p, 2, 2.2)
 ```
