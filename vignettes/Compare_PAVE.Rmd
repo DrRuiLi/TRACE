@@ -375,9 +375,65 @@ p2 <- plot_TRACE_network_split_demo(
 )
 
 open_plot_win(
-  p1 + p2 + patchwork::plot_layout(guides = "collect") &
+  p1 / p2 + patchwork::plot_layout(guides = "collect") &
     ggplot2::theme(legend.position = "right"),
-  10,
-  5
+  6,
+  10
 )
+```
+
+```{r}
+library(tidyr)
+library(ggplot2)
+
+edge.df <- as.data.frame(demo$edge_data)
+ppm.by.vertex <- dplyr::bind_rows(
+  edge.df %>% dplyr::transmute(feature_id = as.character(from), mz_ppm = abs(as.numeric(mz.ppm))),
+  edge.df %>% dplyr::transmute(feature_id = as.character(to),   mz_ppm = abs(as.numeric(mz.ppm)))
+) %>%
+  dplyr::group_by(feature_id) %>%
+  dplyr::summarise(ppm = stats::median(mz_ppm, na.rm = TRUE), .groups = "drop")
+
+bar.df <- vertex_data %>%
+  dplyr::transmute(
+    feature_id = as.character(feature_id),
+    trace_seed = as.character(trace_seed),
+    rt = as.numeric(rt)
+  ) %>%
+  dplyr::left_join(ppm.by.vertex, by = "feature_id") %>%
+  dplyr::arrange(rt) %>%
+  dplyr::mutate(feature_id = factor(feature_id, levels = feature_id))
+
+bar.long <- bar.df %>%
+  tidyr::pivot_longer(
+    cols = c(rt, ppm),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  dplyr::mutate(
+    metric = factor(
+      metric,
+      levels = c("rt", "ppm"),
+      labels = c("RT (s)", "m/z error (ppm)")
+    )
+  )
+
+p <- ggplot2::ggplot(bar.long, ggplot2::aes(x = feature_id, y = value, col = trace_seed)) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::facet_grid(metric ~ ., scales = "free_y") +
+  ggplot2::labs(
+    x = NULL,
+    y = NULL,
+    fill = "TRACE seed"
+  ) +
+  ggplot2::theme_bw(base_size = 6) +
+  ggplot2::theme(
+    axis.text.x = ggplot2::element_text(
+      angle = 90, vjust = 0.5, hjust = 1),
+    legend.position = "none"
+  )
+
+open_plot_win(p, 2, 1.5)
+
+
 ```
