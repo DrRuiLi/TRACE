@@ -87,6 +87,79 @@
   candidates[ord]
 }
 
+#' Compound metadata per assignment group for split-demo subtitles
+#' @noRd
+.trace_lookup_group_compounds <- function(object, pol, sub_assign) {
+  trace_res <- object@advancedAna$TRACE[[pol]]
+  if (is.null(trace_res) || !nrow(trace_res)) {
+    return(NULL)
+  }
+  trace_res <- as.data.frame(trace_res)
+  fid <- as.character(trace_res$feature_id)
+
+  groups <- unique(sub_assign$assign.group)
+  rows <- lapply(groups, function(g) {
+    sub_g <- sub_assign[sub_assign$assign.group == g, , drop = FALSE]
+    seed <- as.character(sub_g$assign.seed[1])
+    hit <- trace_res[fid == seed, , drop = FALSE]
+    if (!nrow(hit) || is.na(hit$compound_id[1])) {
+      nodes <- as.character(sub_g$name)
+      hit <- trace_res[
+        fid %in% nodes &
+          trace_res$type == "metabolite" &
+          !is.na(trace_res$compound_id),
+        ,
+        drop = FALSE
+      ]
+      if (nrow(hit)) {
+        hit <- hit[order(hit$TRACE_anno_score, decreasing = TRUE), , drop = FALSE]
+        hit <- hit[1, , drop = FALSE]
+      }
+    }
+    if (!nrow(hit)) {
+      return(data.frame(
+        assign.group = g,
+        assign.seed = seed,
+        compound_id = NA_character_,
+        compound_name = NA_character_,
+        formula = NA_character_,
+        stringsAsFactors = FALSE
+      ))
+    }
+    data.frame(
+      assign.group = g,
+      assign.seed = seed,
+      compound_id = as.character(hit$compound_id[1]),
+      compound_name = as.character(hit$name[1]),
+      formula = as.character(hit$compound.formula[1]),
+      stringsAsFactors = FALSE
+    )
+  })
+  dplyr::bind_rows(rows)
+}
+
+#' Format assignment-group compound lines for plot subtitle
+#' @noRd
+.trace_format_split_demo_subtitle <- function(group_compounds) {
+  if (is.null(group_compounds) || !nrow(group_compounds)) {
+    return(NULL)
+  }
+  lines <- apply(group_compounds, 1, function(r) {
+    fmt <- function(x) {
+      x <- as.character(x)
+      if (length(x) == 0L || is.na(x) || !nzchar(x)) "NA" else x
+    }
+    sprintf(
+      "%s: compound_id=%s, compound_name=%s, formula=%s",
+      fmt(r["assign.group"]),
+      fmt(r["compound_id"]),
+      fmt(r["compound_name"]),
+      fmt(r["formula"])
+    )
+  })
+  paste(lines, collapse = "  |  ")
+}
+
 #' Build demo object from a split candidate pick
 #' @noRd
 .trace_build_network_split_demo <- function(object, pick, demo_id = 1L, i.pol = 0L) {
@@ -107,6 +180,7 @@
     sub_assign[, c("name", "assign.group", "assign.seed", "TRACE_net_score")],
     by = "name"
   )
+  group_compounds <- .trace_lookup_group_compounds(object, pol, sub_assign)
   list(
     demo_id = demo_id,
     polarity = pol,
@@ -115,6 +189,8 @@
     group_sizes = pick$group_sizes,
     n_cross_edges = pick$n_cross_edges,
     selection_reason = pick$reason,
+    group_compounds = group_compounds,
+    subtitle = .trace_format_split_demo_subtitle(group_compounds),
     ig = sub_ig,
     vertex_data = vdata,
     edge_data = MSdev::edata(sub_ig),
@@ -206,6 +282,7 @@
 .trace_ggplot_network_split_demo <- function(
     ig,
     title,
+    subtitle = NULL,
     layout = "fr",
     show_edge_label = TRUE,
     ...) {
@@ -252,7 +329,6 @@
       data = eda,
       ggplot2::aes(x = x, y = y, label = label),
       size = 2.2,
-      family = "Arial",
       color = "grey30",
       na.rm = TRUE
     ) +
@@ -264,14 +340,14 @@
     ) +
     ggraph::geom_node_text(
       ggplot2::aes(label = label),
-      family = "Arial",
       size = 2.2,
       lineheight = 0.85
     ) +
-    ggplot2::theme_void(base_family = "Arial") +
-    ggplot2::labs(title = title) +
+    ggplot2::theme_void() +
+    ggplot2::labs(title = title, subtitle = subtitle) +
     ggplot2::theme(
       plot.title = ggplot2::element_text(size = 10, face = "bold", hjust = 0.5),
+      plot.subtitle = ggplot2::element_text(size = 7, hjust = 0.5, lineheight = 0.95),
       ...
     )
   p
@@ -406,10 +482,18 @@ plot_TRACE_network_split_demo <- function(
     demo$conn.component,
     paste(unique(demo$assign.groups), collapse = " vs ")
   )
+  subtitle <- if (!is.null(demo$subtitle) && nzchar(demo$subtitle)) {
+    demo$subtitle
+  } else if (!is.null(demo$group_compounds)) {
+    .trace_format_split_demo_subtitle(demo$group_compounds)
+  } else {
+    NULL
+  }
 
   p <- .trace_ggplot_network_split_demo(
     ig,
     title = title,
+    subtitle = subtitle,
     layout = layout,
     show_edge_label = show_edge_label,
     ...
@@ -582,6 +666,10 @@ TRACE_cache_all_network_split_demos <- function(
       normalizePath(index$rds[i], winslash = "/", mustWork = FALSE)
     )
   }
+
+  index$subtitle <- vapply(demos, function(d) {
+    if (is.null(d$subtitle) || !nzchar(d$subtitle)) "" else d$subtitle
+  }, character(1))
 
   saveRDS(
     list(
