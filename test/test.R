@@ -2120,10 +2120,156 @@
 }
 
 {
-  p <-
 
-  open_plot_win(p)
+  # Simulate 3-edge paths built from adduct, fragment, and isotope transitions.
+  # Columns: path_id, edge1, edge2, edge3, net_form, net_form_adduct, net_mass_shift.
+  # Generate 20 paths covering mixed edge-type combinations and net formula changes.
 
+  iso.mass.diff <- get_iso_mass_diff()
+  demo_adduct_names <- c(
+    "[M-H]-", "[M+Na-2H]-", "[M+K-2H]-",
+    "[M+H]+", "[M+Na]+", "[M+K]+", "[M+NH4]+"
+  )
+  ad.mass.diff <- data.table::rbindlist(list(
+    get_adduct_mass_diff(polarity = 0),
+    get_adduct_mass_diff(polarity = 1)
+  ))[
+    mass_diff != 0 &
+      adduct.from %in% demo_adduct_names &
+      adduct.to %in% demo_adduct_names
+  ]
+  fg.mass.diff <- get_fragment_mass_diff()
 
+  # Adduct edges chain: a later adduct must start from the last adduct endpoint
+  # (even if fragment/isotope edges lie in between).
+  .pick_adduct_edge <- function(idx, from_adduct = NULL) {
+    pool <- ad.mass.diff
+    if (!is.null(from_adduct)) {
+      pool <- pool[adduct.from == from_adduct]
+      if (!nrow(pool)) {
+        stop("No adduct transition from ", from_adduct, call. = FALSE)
+      }
+    }
+    idx <- ((idx - 1L) %% nrow(pool)) + 1L
+    row <- pool[idx]
+    list(
+      type = "adduct",
+      adduct.from = row$adduct.from,
+      adduct.to = row$adduct.to,
+      label = paste0("adduct: ", row$adduct.from, " > ", row$adduct.to),
+      chemform_diff = row$chemform_diff,
+      mass_diff = row$mass_diff
+    )
+  }
+
+  .pick_transition_edge <- function(type, idx, adduct_from = NULL) {
+    if (type == "adduct") {
+      return(.pick_adduct_edge(idx, from_adduct = adduct_from))
+    }
+    dt <- switch(
+      type,
+      isotope = iso.mass.diff,
+      fragment = fg.mass.diff,
+      stop("Unknown transition type: ", type)
+    )
+    idx <- ((idx - 1L) %% nrow(dt)) + 1L
+    row <- dt[idx]
+    detail <- switch(
+      type,
+      isotope = row$element,
+      fragment = chemform_simplify(row$chemform_diff)
+    )
+    list(
+      type = type,
+      label = paste0(type, ": ", detail),
+      chemform_diff = row$chemform_diff,
+      mass_diff = row$mass_diff
+    )
+  }
+
+  .pick_path_edges <- function(spec) {
+    adduct_cursor <- NULL
+    edges <- vector("list", 3L)
+    types <- c(spec$type1, spec$type2, spec$type3)
+    idxs <- c(spec$idx1, spec$idx2, spec$idx3)
+    for (k in seq_along(types)) {
+      edges[[k]] <- .pick_transition_edge(
+        types[k],
+        idxs[k],
+        adduct_from = if (types[k] == "adduct") adduct_cursor else NULL
+      )
+      if (types[k] == "adduct") {
+        adduct_cursor <- edges[[k]]$adduct.to
+      }
+    }
+    edges
+  }
+
+  .path_net <- function(edges) {
+    net_form <- chemform_simplify(MSCC:::chemform_sum(vapply(edges, `[[`, "", "chemform_diff")))
+    adduct_forms <- vapply(edges[vapply(edges, function(e) e$type == "adduct", logical(1))],
+                           `[[`, "", "chemform_diff")
+    net_form_adduct <- if (length(adduct_forms)) {
+      chemform_simplify(MSCC:::chemform_sum(adduct_forms))
+    } else {
+      ""
+    }
+    net_mass_shift <- sum(vapply(edges, `[[`, numeric(1), "mass_diff"))
+    list(
+      net_form = net_form,
+      net_form_adduct = net_form_adduct,
+      net_mass_shift = net_mass_shift
+    )
+  }
+
+  path_specs <- data.frame(
+    path_id = 1:20,
+    type1 = c(
+      "adduct", "adduct", "adduct", "fragment", "fragment", "fragment",
+      "isotope", "isotope", "isotope", "adduct", "adduct", "fragment",
+      "fragment", "isotope", "isotope", "adduct", "fragment", "isotope",
+      "adduct", "fragment"
+    ),
+    idx1 = c(1, 2, 3, 1, 3, 8, 1, 2, 5, 1, 4, 1, 4, 1, 3, 2, 2, 4, 5, 6),
+    type2 = c(
+      "fragment", "isotope", "adduct", "fragment", "isotope", "adduct",
+      "fragment", "adduct", "isotope", "isotope", "fragment", "adduct",
+      "isotope", "fragment", "adduct", "fragment", "isotope", "adduct",
+      "isotope", "adduct"
+    ),
+    idx2 = c(2, 3, 1, 5, 1, 1, 3, 3, 2, 4, 6, 2, 7, 2, 5, 9, 1, 6, 3, 4),
+    type3 = c(
+      "isotope", "fragment", "fragment", "adduct", "adduct", "isotope",
+      "adduct", "fragment", "fragment", "adduct", "isotope", "isotope",
+      "adduct", "adduct", "fragment", "isotope", "adduct", "fragment",
+      "fragment", "isotope"
+    ),
+    idx3 = c(3, 1, 5, 1, 2, 4, 2, 5, 6, 1, 2, 4, 1, 3, 8, 1, 7, 3, 5, 2),
+    stringsAsFactors = FALSE
+  )
+
+  x <- do.call(
+    rbind,
+    lapply(seq_len(nrow(path_specs)), function(i) {
+      spec <- path_specs[i, ]
+      path_edges <- .pick_path_edges(spec)
+      e1 <- path_edges[[1L]]
+      e2 <- path_edges[[2L]]
+      e3 <- path_edges[[3L]]
+      net <- .path_net(list(e1, e2, e3))
+      data.frame(
+        path_id = spec$path_id,
+        edge1 = e1$label,
+        edge2 = e2$label,
+        edge3 = e3$label,
+        net_form = net$net_form,
+        net_form_adduct = net$net_form_adduct,
+        net_mass_shift = net$net_mass_shift,
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+  rownames(x) <- NULL
+  x
 }
 
