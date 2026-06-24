@@ -79,7 +79,7 @@ object <- TRACE_annotate(object, i.pol = 0)
 ```
 
 ```{r}
-object <- TRACE_workflow(object)
+#object <- TRACE_workflow(object)
 TRACE_export(object, file  = "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/TRACE_export.xlsx")
 MSdev_save(object)
 ```
@@ -368,7 +368,7 @@ p2 <- plot_TRACE_network_split_demo(
   )
 )
 
-open_plot_win(
+MSdev:::open_plot_ppt(
   p1 / p2 + patchwork::plot_layout(guides = "collect") &
     ggplot2::theme(legend.position = "right"),
   6,
