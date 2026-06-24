@@ -530,6 +530,341 @@ plot_compare_pave_adduct <- function(
     )
 }
 
+.pave_read_chem_lib <- function(file) {
+  lib <- openxlsx::read.xlsx(file)
+  data.frame(
+    compound_id = paste0("YLDB", sprintf("%05d", lib[["ID"]])),
+    name = as.character(lib[["Name"]]),
+    formula = as.character(lib[["Formula"]]),
+    rt = suppressWarnings(as.numeric(lib[["RT"]])),
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+}
+
+#' Match one PAVE feature to \code{chem_lib} by formula and RT
+#'
+#' PAVE feature \code{rt} and \code{chem_lib} \code{RT} are in minutes;
+#' \code{rt.tol} is in seconds.
+#' @noRd
+.pave_match_chem_lib_entry <- function(formula, rt, lib, rt.tol = 60) {
+  formula <- as.character(formula)
+  rt_min <- suppressWarnings(as.numeric(rt))
+  if (is.na(formula) || !nzchar(formula) || !is.finite(rt_min)) {
+    return(list(
+      pave_lib = FALSE,
+      compound_id_pave = NA_character_,
+      formula_pave_lib = NA_character_,
+      rt_pave_lib = NA_real_
+    ))
+  }
+
+  idx <- which(lib$formula == formula)
+  if (!length(idx)) {
+    return(list(
+      pave_lib = FALSE,
+      compound_id_pave = NA_character_,
+      formula_pave_lib = formula,
+      rt_pave_lib = rt_min
+    ))
+  }
+
+  rt_sec <- rt_min * 60
+  rtd <- abs(rt_sec - lib$rt[idx] * 60)
+  j <- idx[which.min(rtd)]
+  if (!is.finite(rtd[which.min(rtd)]) || min(rtd, na.rm = TRUE) > rt.tol) {
+    return(list(
+      pave_lib = FALSE,
+      compound_id_pave = NA_character_,
+      formula_pave_lib = formula,
+      rt_pave_lib = rt_min
+    ))
+  }
+
+  list(
+    pave_lib = TRUE,
+    compound_id_pave = lib$compound_id[j],
+    formula_pave_lib = formula,
+    rt_pave_lib = rt_min
+  )
+}
+
+#' Assign PAVE library hits by matching \code{pks_features} to \code{chem_lib}
+#'
+#' Metabolites are matched on feature \code{formula} and \code{rt}. Adducts
+#' inherit the seed metabolite formula resolved from the closest m/z to
+#' \code{pave_seed} (within \code{ppm}), then use that metabolite's RT for the
+#' library RT check. PAVE and \code{chem_lib} RT values are in minutes;
+#' \code{rt.tol} is in seconds.
+#'
+#' @param pave.df.raw PAVE \code{pks_features} data frame.
+#' @param chem.lib.file Path to \code{chem_lib.xlsx}.
+#' @param rt.tol RT tolerance in seconds.
+#' @param ppm m/z tolerance when resolving adduct seed metabolites.
+#'
+#' @returns Data frame with \code{feature_id}, \code{type_pave},
+#'   \code{formula_pave_lib}, \code{compound_id_pave}, \code{rt_pave_lib},
+#'   and \code{pave_lib}.
+#' @noRd
+.pave_match_features_to_chem_lib <- function(
+    pave.df.raw,
+    chem.lib.file,
+    rt.tol = 60,
+    ppm = 10) {
+  lib <- .pave_read_chem_lib(chem.lib.file)
+
+  pave.df <- pave.df.raw %>%
+    dplyr::mutate(
+      feature_id = as.integer(gsub("[^0-9]+", "", feature_id)),
+      type_pave = dplyr::case_when(
+        is.na(feature) | feature == "Background" ~ "blank/noise",
+        TRUE ~ as.character(feature)
+      ),
+      type_pave = dplyr::case_when(
+        type_pave %in% c("Metabolite", "Isotope", "Fragment", "Adduct") ~ type_pave,
+        TRUE ~ "blank/noise"
+      ),
+      formula_pave = as.character(formula),
+      mz = suppressWarnings(as.numeric(mz)),
+      rt_pave = suppressWarnings(as.numeric(rt)),
+      pave_seed_mz = suppressWarnings(as.numeric(pave_seed))
+    )
+
+  met.lib <- pave.df %>%
+    dplyr::filter(
+      type_pave == "Metabolite",
+      !is.na(formula_pave),
+      formula_pave != ""
+    )
+
+  match_rows_full <- function(formula, rt) {
+    lapply(seq_along(formula), function(i) {
+      .pave_match_chem_lib_entry(formula[i], rt[i], lib, rt.tol = rt.tol)
+    })
+  }
+
+  pave.df$pave_lib <- FALSE
+  pave.df$compound_id_pave <- NA_character_
+  pave.df$formula_pave_lib <- NA_character_
+  pave.df$rt_pave_lib <- NA_real_
+
+  met.idx <- which(
+    pave.df$type_pave == "Metabolite" &
+      !is.na(pave.df$formula_pave) &
+      pave.df$formula_pave != ""
+  )
+  if (length(met.idx)) {
+    met.hit <- match_rows_full(pave.df$formula_pave[met.idx], pave.df$rt_pave[met.idx])
+    pave.df$pave_lib[met.idx] <- vapply(met.hit, function(x) x$pave_lib, logical(1))
+    pave.df$compound_id_pave[met.idx] <- vapply(met.hit, function(x) x$compound_id_pave, character(1))
+    pave.df$formula_pave_lib[met.idx] <- vapply(met.hit, function(x) x$formula_pave_lib, character(1))
+    pave.df$rt_pave_lib[met.idx] <- vapply(met.hit, function(x) x$rt_pave_lib, numeric(1))
+  }
+
+  ad.idx <- which(pave.df$type_pave == "Adduct")
+  if (length(ad.idx) && nrow(met.lib)) {
+    for (i in ad.idx) {
+      seed_mz <- pave.df$pave_seed_mz[i]
+      if (!is.finite(seed_mz) || seed_mz <= 0) {
+        next
+      }
+      ppm_err <- abs(met.lib$mz - seed_mz) / seed_mz * 1e6
+      j <- which.min(ppm_err)
+      if (!length(j) || !is.finite(min(ppm_err)) || min(ppm_err) > ppm) {
+        next
+      }
+      hit <- .pave_match_chem_lib_entry(
+        met.lib$formula_pave[j],
+        met.lib$rt_pave[j],
+        lib,
+        rt.tol = rt.tol
+      )
+      if (!hit$pave_lib) {
+        next
+      }
+      pave.df$pave_lib[i] <- TRUE
+      pave.df$compound_id_pave[i] <- hit$compound_id_pave
+      pave.df$formula_pave_lib[i] <- hit$formula_pave_lib
+      pave.df$rt_pave_lib[i] <- hit$rt_pave_lib
+    }
+  }
+
+  pave.df %>%
+    dplyr::select(
+      feature_id,
+      type_pave,
+      formula_pave_lib,
+      compound_id_pave,
+      rt_pave_lib,
+      pave_lib
+    )
+}
+
+#' Convert PAVE \code{chem_lib.xlsx} to a TRACE compound-database table
+#'
+#' PAVE library RT values are in minutes; TRACE expects seconds by default.
+#'
+#' @param file Path to \code{chem_lib.xlsx}.
+#' @param rt_in_seconds If \code{TRUE}, multiply RT by 60.
+#'
+#' @returns Data frame with columns \code{compound_id}, \code{name},
+#'   \code{formula}, \code{rt}, and \code{kegg_id}.
+#' @noRd
+.pave_chem_lib_to_cpdb <- function(file, rt_in_seconds = TRUE) {
+  lib <- openxlsx::read.xlsx(file)
+  rt_min <- suppressWarnings(as.numeric(lib[["RT"]]))
+  rt_val <- if (rt_in_seconds) rt_min * 60 else rt_min
+  rt_val[is.na(rt_min)] <- NA_real_
+
+  data.frame(
+    compound_id = paste0("YLDB", sprintf("%05d", lib[["ID"]])),
+    name = as.character(lib[["Name"]]),
+    formula = as.character(lib[["Formula"]]),
+    rt = rt_val,
+    kegg_id = NA_character_,
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+}
+
+#' Merge PAVE and TRACE exports for library-match comparison
+#'
+#' PAVE library hits are assigned by matching \code{pks_features} to
+#' \code{chem_lib.xlsx} on chemical formula and RT (minutes). TRACE library
+#' hits have a non-empty \code{compound_id}.
+#'
+#' @param pave.file Path to \code{pks_features.xlsx}.
+#' @param trace.file Path to a TRACE export xlsx (sheet 1).
+#' @param chem.lib.file Path to \code{chem_lib.xlsx}.
+#' @param rt.tol RT tolerance in seconds for PAVE library matching.
+#' @param ppm m/z tolerance when resolving adduct seed metabolites.
+#'
+#' @returns Merged data frame with \code{pave_lib}, \code{trace_lib},
+#'   \code{lib_match}, and \code{lib_assignment} columns.
+#' @noRd
+.compare_pave_lib_merge <- function(
+    pave.file,
+    trace.file,
+    chem.lib.file,
+    rt.tol = 60,
+    ppm = 10) {
+  pave.df.raw <- openxlsx::read.xlsx(pave.file)
+  trace.df.raw <- openxlsx::read.xlsx(trace.file, sheet = 1)
+
+  pave.df <- .pave_match_features_to_chem_lib(
+    pave.df.raw,
+    chem.lib.file = chem.lib.file,
+    rt.tol = rt.tol,
+    ppm = ppm
+  )
+
+  trace.df <- trace.df.raw %>%
+    dplyr::mutate(
+      feature_id = as.integer(feature_id),
+      formula_trace_lib = as.character(compound.formula),
+      compound_id_trace = as.character(compound_id),
+      type_trace = dplyr::case_when(
+        is.na(type) | type == "" ~ "blank/noise",
+        TRUE ~ as.character(type)
+      ),
+      trace_lib = !is.na(compound_id_trace) & compound_id_trace != ""
+    ) %>%
+    dplyr::select(
+      feature_id,
+      type_trace,
+      formula_trace_lib,
+      compound_id_trace,
+      trace_lib
+    )
+
+  dplyr::full_join(pave.df, trace.df, by = "feature_id") %>%
+    dplyr::mutate(
+      type_pave = dplyr::if_else(is.na(type_pave), "blank/noise", type_pave),
+      type_trace = dplyr::if_else(is.na(type_trace), "blank/noise", type_trace),
+      type_pave = stringr::str_to_sentence(type_pave),
+      type_trace = stringr::str_to_sentence(type_trace),
+      pave_lib = !is.na(pave_lib) & pave_lib,
+      trace_lib = !is.na(trace_lib) & trace_lib,
+      lib_match = pave_lib &
+        trace_lib &
+        !is.na(formula_pave_lib) &
+        !is.na(formula_trace_lib) &
+        chemform_simplify(formula_pave_lib) == chemform_simplify(formula_trace_lib),
+      lib_assignment = dplyr::case_when(
+        pave_lib & trace_lib ~ "both",
+        pave_lib & !trace_lib ~ "PAVE_only",
+        !pave_lib & trace_lib ~ "TRACE_only",
+        TRUE ~ "neither"
+      )
+    )
+}
+
+#' Library match ratio bar (PAVE | OVERLAP | TRACE)
+#' @noRd
+.compare_pave_lib_match_ratio_plot <- function(
+    pave.trace.merged.lib,
+    types = c("Metabolite", "Adduct")) {
+  lib.df <- dplyr::filter(
+    pave.trace.merged.lib,
+    type_pave %in% types | type_trace %in% types
+  )
+  lib.df$pave_lib <- !is.na(lib.df$pave_lib) & lib.df$pave_lib
+  lib.df$trace_lib <- !is.na(lib.df$trace_lib) & lib.df$trace_lib
+
+  n_pave_lib <- sum(lib.df$lib_assignment == "PAVE_only", na.rm = TRUE)
+  n_trace_lib <- sum(lib.df$lib_assignment == "TRACE_only", na.rm = TRUE)
+  n_overlap <- sum(lib.df$lib_assignment == "both", na.rm = TRUE)
+
+  stack.df <- data.frame(
+    part = factor(
+      c("PAVE", "Overelap", "TRACE"),
+      levels = c("PAVE", "Overelap", "TRACE")
+    ),
+    n = c(
+      n_pave_lib,
+      n_overlap,
+      n_trace_lib
+    ),
+    stringsAsFactors = FALSE
+  )
+
+  ratio <- if (n_pave_lib > 0) n_trace_lib / n_pave_lib else NA_real_
+  total_n <- sum(stack.df$n)
+  stack.df$pct <- if (total_n > 0) stack.df$n / total_n else 0
+  stack.df$label <- paste0(
+    stack.df$part,
+    "\n",
+    scales::percent(stack.df$pct, accuracy = 0.1)
+  )
+
+  p <- ggplot2::ggplot(stack.df, ggplot2::aes(x = "Library match", y = n, fill = part)) +
+    ggplot2::geom_col(width = 0.55, color = "white", linewidth = 0.2) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = label),
+      position = ggplot2::position_stack(vjust = 0.5),
+      size = 2,
+      lineheight = 0.9,
+      color = "grey10",
+      show.legend = FALSE
+    ) +
+    ggplot2::scale_y_continuous(labels = scales::comma) +
+    ggplot2::labs(x = NULL, y = "Features count", fill = NULL) +
+    ggplot2::theme_bw(base_size = 6) +
+    ggplot2::theme(
+      legend.position = "none",
+      axis.text.x = ggplot2::element_text(size = 6)
+    )
+
+  list(
+    plot = p,
+    ratio = ratio,
+    n_pave_lib = n_pave_lib,
+    n_trace_lib = n_trace_lib,
+    n_overlap = n_overlap,
+    stack = stack.df
+  )
+}
+
 #' CN formula matched ratio bar (PAVE | OVERLAP | TRACE)
 #' @noRd
 .compare_pave_cn_match_ratio_plot <- function(

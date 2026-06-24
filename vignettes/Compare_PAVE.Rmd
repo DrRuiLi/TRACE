@@ -247,6 +247,64 @@ show the proportion of false positive of adduct/fragment/isotope, the false posi
 res.afis.fp <- .compare_pave_afis_false_positive_plot(pave.trace.merged)
 open_plot_win(res.afis.fp$plot, 1.5, 2)
 ```
+#### 2.2.4 Library match ratio
+
+PAVE library: `chem_lib.xlsx`. Convert it to the TRACE compound-database format, re-run `TRACE_annotate` with that library (or load a saved export), then merge PAVE hits matched to `chem_lib` on **formula and RT** (`rt.tol` in **seconds**) with TRACE library hits. Stacked bar: `|PAVE|OVERLAP|TRACE|`.
+
+**Data** (slow — annotate / xlsx / merge; run when inputs change):
+
+```{r lib-match-data}
+pave.dir <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/"
+chem.lib.file <- file.path(pave.dir, "chem_lib.xlsx")
+trace.cpdb.file <- file.path(pave.dir, "trace_pave_chem_lib.cpdb.xlsx")
+trace.lib.file <- file.path(pave.dir, "TRACE_export_chem_lib.xlsx")
+merged.lib.file <- file.path(pave.dir, "pave.trace.merged.lib.rds")
+msdev.file <- "C:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/raw_neg-20251010T060553Z-1-001/MSdev_2026_06_03.Rdata"
+
+rerun_lib_annotate <- FALSE
+rerun_lib_merge <- FALSE
+
+cpdb <- .pave_chem_lib_to_cpdb(chem.lib.file)
+openxlsx::write.xlsx(cpdb, trace.cpdb.file, rowNames = FALSE)
+
+if (rerun_lib_annotate || !file.exists(trace.lib.file)) {
+  object.lib <- MSdev_load(msdev.file)
+  object.lib <- TRACE_annotate(object.lib, i.pol = 0, cpdb = trace.cpdb.file)
+  TRACE_export(object.lib, file = trace.lib.file)
+}
+
+if (rerun_lib_merge || !file.exists(merged.lib.file)) {
+  pave.trace.merged.lib <- .compare_pave_lib_merge(
+    pave.file = file.path(pave.dir, "pks_features.xlsx"),
+    trace.file = trace.lib.file,
+    chem.lib.file = chem.lib.file,
+    rt.tol = 60
+  )
+  table(pave.trace.merged.lib$lib_assignment)
+  saveRDS(pave.trace.merged.lib, merged.lib.file)
+} else {
+  pave.trace.merged.lib <- readRDS(merged.lib.file)
+}
+```
+
+**Plot** (fast — reload cached merge table and replot):
+
+```{r lib-match-plot}
+pave.dir <- "c:/Users/91879/OneDrive/Documents/YLF_Lab/Project/2025.10.10.PAVE/PAVE-Matlab/example/"
+pave.trace.merged.lib <- readRDS(file.path(pave.dir, "pave.trace.merged.lib.rds"))
+
+res.lib <- .compare_pave_lib_match_ratio_plot(
+  pave.trace.merged.lib,
+  types = c("Metabolite", "Adduct", "Fragment", "Isotope")
+)
+open_plot_win(res.lib$plot, 1.5, 2)
+
+res.lib <- .compare_pave_lib_match_ratio_plot(
+  pave.trace.merged.lib,
+  types = c("Metabolite")
+)
+open_plot_win(res.lib$plot, 1.5, 2)
+```
 
 ### 2.3 Annotation change composition
 
