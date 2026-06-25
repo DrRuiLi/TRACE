@@ -35,8 +35,8 @@ BiocManager::install(c("xcms", "MSCC"))
 install.packages(c("data.table", "openxlsx", "dplyr", "ggplot2", "igraph",
                  "BiocParallel", "patchwork", "ggrastr", "tidyr", "devtools"))
 
-devtools::install("DrRuiLi/TRACE/MSdev")
-devtools::install("DrRuiLi/TRACE")
+devtools::install_github("DrRuiLi/MSdev")
+devtools::install_github("DrRuiLi/TRACE")
 ```
 
 ## Usage
