@@ -656,12 +656,3 @@ TRACE <- function(object){
 
 
 
-
-extract_formula_CN <- function(x){
-  x <- stringr::str_extract_all(x, "[CN]\\d+") |>
-    vapply(paste0, collapse = "", FUN.VALUE = character(1))
-  paste0(x, ifelse(grepl("N", x), "", "N0"))
-}
-
-
-
